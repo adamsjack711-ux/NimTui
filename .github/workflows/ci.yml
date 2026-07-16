@@ -32,6 +32,7 @@ jobs:
             *) echo "no shipped binary for this runner"; exit 0 ;;
           esac
           chmod +x "$bin"
-          (sleep 2; printf q) | "$bin" > /tmp/smoke.out
+          # --selftest renders one frame and exits (no tty, no hanging loop)
+          "$bin" --selftest > /tmp/smoke.out
           grep -q "loom dashboard" /tmp/smoke.out
           echo "shipped $bin runs"

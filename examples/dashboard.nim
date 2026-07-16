@@ -3,7 +3,7 @@
 ##
 ##   nim c -d:release examples/dashboard.nim && ./bin/dashboard
 
-import std/[algorithm, cpuinfo, osproc, strformat, strutils, times]
+import std/[algorithm, cpuinfo, os, osproc, strformat, strutils, times]
 import loom
 
 proc getloadavg(loads: ptr cdouble, nelem: cint): cint
@@ -184,7 +184,23 @@ proc view(): Widget =
 
 # ---- wiring ----------------------------------------------------------------
 
+proc selftest(): int =
+  ## Render one frame headlessly and print it — no event loop, no tty.
+  ## Lets CI verify the binary actually runs and lays out on each platform
+  ## without the fragility of piping keystrokes into an interactive TUI.
+  initTotalMem()
+  let (rows, pids) = parsePs(execProcess("ps",
+    args = ["axo", "pid=,pcpu=,pmem=,comm="], options = {poUsePath}))
+  allProcs.set rows
+  allPids.set pids
+  let app = newApp(view)
+  let frame = app.renderFrame(100, 30)
+  echo frame.dump
+  if "loom dashboard" in frame.dump: 0 else: 1
+
 proc main() =
+  if "--selftest" in commandLineParams():
+    quit(selftest())
   let app = newApp(view, mouse = true)
   var mouseOn = true
   const themes = [themeDefault, themeNeon, themeMono]
