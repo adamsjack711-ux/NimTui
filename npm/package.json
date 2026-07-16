@@ -1,6 +1,6 @@
 {
   "name": "nimtui",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Live system dashboard built with loom, the reactive TUI framework for Nim. Ships the `nimtui` command — try the framework in one npx.",
   "bin": {
     "nimtui": "bin/nimtui.js"
@@ -13,10 +13,12 @@
     "LICENSE"
   ],
   "os": [
-    "darwin"
+    "darwin",
+    "linux"
   ],
   "cpu": [
-    "arm64"
+    "arm64",
+    "x64"
   ],
   "engines": {
     "node": ">=18"

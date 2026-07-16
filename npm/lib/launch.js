@@ -30,10 +30,10 @@ function launch(name) {
       `${name}: no prebuilt binary for ${process.platform}-${process.arch}.`
     );
     console.error(
-      'nimtui currently ships macOS arm64 binaries. On other platforms, build'
+      'nimtui ships binaries for macOS and Linux (arm64 + x64). On other'
     );
     console.error(
-      `from source with nim and point ${name.toUpperCase()}_BIN at the binary.`
+      `platforms, build from source with nim and point ${name.toUpperCase()}_BIN at the binary.`
     );
     process.exit(1);
   }

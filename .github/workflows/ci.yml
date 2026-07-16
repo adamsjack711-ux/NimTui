@@ -22,3 +22,16 @@ jobs:
         run: nimble test -y
       - name: Build demo
         run: nim c -d:release --hints:off examples/dashboard.nim
+      - name: Smoke-run the shipped npm binary for this platform
+        run: |
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64) bin=npm/dist/linux-x64/nimtui ;;
+            Linux-aarch64) bin=npm/dist/linux-arm64/nimtui ;;
+            Darwin-arm64) bin=npm/dist/darwin-arm64/nimtui ;;
+            Darwin-x86_64) bin=npm/dist/darwin-x64/nimtui ;;
+            *) echo "no shipped binary for this runner"; exit 0 ;;
+          esac
+          chmod +x "$bin"
+          (sleep 2; printf q) | "$bin" > /tmp/smoke.out
+          grep -q "loom dashboard" /tmp/smoke.out
+          echo "shipped $bin runs"

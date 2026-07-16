@@ -53,7 +53,7 @@ Docs and source: **https://github.com/adamsjack711-ux/NimTui**
 
 ## Platform support
 
-Currently **macOS (Apple Silicon)** only — that's the prebuilt binary bundled in this package. Other platforms can build from source with nim (`nimble demo` in the repo) and set `NIMTUI_BIN` to the built binary.
+Prebuilt binaries for **macOS (arm64, x64)** and **Linux (arm64, x64 — static musl, runs anywhere)**. Other platforms can build from source with nim (`nimble demo` in the repo) and set `NIMTUI_BIN` to the built binary.
 
 ## License
 
