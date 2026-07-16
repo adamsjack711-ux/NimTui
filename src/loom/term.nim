@@ -48,7 +48,8 @@ proc setup*(t: var Terminal) =
     discard tcSetAttr(0, TCSAFLUSH, addr raw)
     rawOn = true
   discard posix.signal(SIGWINCH, onWinch)
-  stdout.write "\e[?1049h\e[?25l\e[2J"
+  # alt screen, hidden cursor, clear, then SGR mouse reporting
+  stdout.write "\e[?1049h\e[?25l\e[2J\e[?1000h\e[?1006h"
   stdout.flushFile()
   let s = termSize()
   t.width = s.w
@@ -58,7 +59,7 @@ proc setup*(t: var Terminal) =
 
 proc restore*(t: var Terminal) =
   if not t.active: return
-  stdout.write "\e[0m\e[?25h\e[?1049l"
+  stdout.write "\e[?1006l\e[?1000l\e[0m\e[?25h\e[?1049l"
   stdout.flushFile()
   if rawOn:
     discard tcSetAttr(0, TCSAFLUSH, addr origTios)
@@ -107,43 +108,70 @@ proc readAvailable(): string =
       result.add tmp[i]
     if n < tmp.len: break
 
-proc parseCsi(): Key =
+proc parseCsi(): Event =
   ## Called with pendingPos just past "\e[".
+  var isMouse = false
+  if pendingPos < pendingBuf.len and pendingBuf[pendingPos] == '<':
+    isMouse = true
+    inc pendingPos
   var params = ""
   while pendingPos < pendingBuf.len and pendingBuf[pendingPos] in {'0' .. '9', ';'}:
     params.add pendingBuf[pendingPos]
     inc pendingPos
   if pendingPos >= pendingBuf.len:
-    return key(kNone)
+    return keyEvent(key(kNone))
   let final = pendingBuf[pendingPos]
   inc pendingPos
+  if isMouse:
+    # SGR mouse report: \e[<b;x;yM (press) or \e[<b;x;ym (release)
+    if final notin {'M', 'm'}: return keyEvent(key(kNone))
+    let parts = params.split(';')
+    if parts.len < 3: return keyEvent(key(kNone))
+    let b =
+      try: parseInt(parts[0])
+      except ValueError: return keyEvent(key(kNone))
+    let x =
+      try: parseInt(parts[1]) - 1
+      except ValueError: return keyEvent(key(kNone))
+    let y =
+      try: parseInt(parts[2]) - 1
+      except ValueError: return keyEvent(key(kNone))
+    if b >= 64:
+      if b > 65: return keyEvent(key(kNone))   # horizontal wheel etc.
+      return mouseEvent(if b == 64: mWheelUp else: mWheelDown, mbNone, x, y)
+    let btn = case b and 3
+      of 0: mbLeft
+      of 1: mbMiddle
+      of 2: mbRight
+      else: mbNone
+    return mouseEvent(if final == 'M': mPress else: mRelease, btn, x, y)
   case final
-  of 'A': key(kUp)
-  of 'B': key(kDown)
-  of 'C': key(kRight)
-  of 'D': key(kLeft)
-  of 'H': key(kHome)
-  of 'F': key(kEnd)
-  of 'Z': key(kBackTab)
+  of 'A': keyEvent(key(kUp))
+  of 'B': keyEvent(key(kDown))
+  of 'C': keyEvent(key(kRight))
+  of 'D': keyEvent(key(kLeft))
+  of 'H': keyEvent(key(kHome))
+  of 'F': keyEvent(key(kEnd))
+  of 'Z': keyEvent(key(kBackTab))
   of '~':
     let n =
       try: parseInt(params.split(';')[0])
       except ValueError: 0
     case n
-    of 1, 7: key(kHome)
-    of 2: key(kInsert)
-    of 3: key(kDelete)
-    of 4, 8: key(kEnd)
-    of 5: key(kPageUp)
-    of 6: key(kPageDown)
-    of 11 .. 15: Key(kind: kFn, n: n - 10)
-    of 17 .. 21: Key(kind: kFn, n: n - 11)
-    of 23, 24: Key(kind: kFn, n: n - 12)
-    else: key(kNone)
-  else: key(kNone)
+    of 1, 7: keyEvent(key(kHome))
+    of 2: keyEvent(key(kInsert))
+    of 3: keyEvent(key(kDelete))
+    of 4, 8: keyEvent(key(kEnd))
+    of 5: keyEvent(key(kPageUp))
+    of 6: keyEvent(key(kPageDown))
+    of 11 .. 15: keyEvent(Key(kind: kFn, n: n - 10))
+    of 17 .. 21: keyEvent(Key(kind: kFn, n: n - 11))
+    of 23, 24: keyEvent(Key(kind: kFn, n: n - 12))
+    else: keyEvent(key(kNone))
+  else: keyEvent(key(kNone))
 
-proc parseOne(depth = 0): Key =
-  ## Parse one key from the pending byte queue, advancing pendingPos.
+proc parseOne(depth = 0): Event =
+  ## Parse one event from the pending byte queue, advancing pendingPos.
   let b = pendingBuf[pendingPos]
   inc pendingPos
   case b
@@ -154,7 +182,7 @@ proc parseOne(depth = 0): Key =
       if waitReadable(5):
         pendingBuf.add readAvailable()
     if pendingPos >= pendingBuf.len:
-      return key(kEsc)
+      return keyEvent(key(kEsc))
     let nxt = pendingBuf[pendingPos]
     case nxt
     of '[':
@@ -162,25 +190,26 @@ proc parseOne(depth = 0): Key =
       parseCsi()
     of 'O':
       inc pendingPos
-      if pendingPos >= pendingBuf.len: return key(kEsc)
+      if pendingPos >= pendingBuf.len: return keyEvent(key(kEsc))
       let f = pendingBuf[pendingPos]
       inc pendingPos
       case f
-      of 'P' .. 'S': Key(kind: kFn, n: f.ord - 'P'.ord + 1)
-      of 'H': key(kHome)
-      of 'F': key(kEnd)
-      else: key(kNone)
+      of 'P' .. 'S': keyEvent(Key(kind: kFn, n: f.ord - 'P'.ord + 1))
+      of 'H': keyEvent(key(kHome))
+      of 'F': keyEvent(key(kEnd))
+      else: keyEvent(key(kNone))
     else:
-      if depth > 0: return key(kEsc)
-      var k = parseOne(depth + 1)
-      k.alt = true
-      k
-  of '\r', '\n': key(kEnter)
-  of '\t': key(kTab)
-  of '\b', '\x7f': key(kBackspace)
+      if depth > 0: return keyEvent(key(kEsc))
+      var e = parseOne(depth + 1)
+      if e.kind == ekKey:
+        e.key.alt = true
+      e
+  of '\r', '\n': keyEvent(key(kEnter))
+  of '\t': keyEvent(key(kTab))
+  of '\b', '\x7f': keyEvent(key(kBackspace))
   of '\x01' .. '\x07', '\x0b', '\x0c', '\x0e' .. '\x1a':
-    chKey($chr(b.ord + 'a'.ord - 1), ctrl = true)
-  of '\x00': key(kNone)
+    keyEvent(chKey($chr(b.ord + 'a'.ord - 1), ctrl = true))
+  of '\x00': keyEvent(key(kNone))
   else:
     # UTF-8: pull continuation bytes for multi-byte runes.
     var n = 1
@@ -192,22 +221,32 @@ proc parseOne(depth = 0): Key =
       if pendingPos < pendingBuf.len:
         ch.add pendingBuf[pendingPos]
         inc pendingPos
-    chKey(ch)
+    keyEvent(chKey(ch))
 
-proc pollKey*(timeoutMs: int): Option[Key] =
-  ## Wait up to `timeoutMs` for a key. Serves buffered input first, so
-  ## calling with timeout 0 drains queued keys without blocking.
+proc feedInput*(s: string) =
+  ## Inject bytes as if they arrived from the terminal — for tests and
+  ## programmatic driving.
+  if pendingPos >= pendingBuf.len:
+    pendingBuf = s
+    pendingPos = 0
+  else:
+    pendingBuf.add s
+
+proc pollEvent*(timeoutMs: int): Option[Event] =
+  ## Wait up to `timeoutMs` for an input event. Serves buffered input
+  ## first, so calling with timeout 0 drains queued events without
+  ## blocking.
   if pendingPos >= pendingBuf.len:
     pendingBuf = ""
     pendingPos = 0
     if timeoutMs > 0 and not waitReadable(timeoutMs):
-      return none(Key)
+      return none(Event)
     pendingBuf = readAvailable()
     if pendingBuf.len == 0:
-      return none(Key)
-  var k = parseOne()
-  while k.kind == kNone and pendingPos < pendingBuf.len:
-    k = parseOne()
-  if k.kind == kNone:
-    return none(Key)
-  some k
+      return none(Event)
+  var e = parseOne()
+  while e.isNoneEvent and pendingPos < pendingBuf.len:
+    e = parseOne()
+  if e.isNoneEvent:
+    return none(Event)
+  some e

@@ -16,9 +16,13 @@ type
     heightSpec*: SizeSpec
     children*: seq[Widget]
     focusable*: bool
+    autofocus*: bool   ## receives initial focus (first match wins)
 
-  RenderCtx* = object
+  HitRegion* = tuple[w: Widget, area: Rect]
+
+  RenderCtx* = ref object
     focused*: Widget
+    hits*: seq[HitRegion]   ## focusable widgets' screen areas, for mouse
 
 proc fixed*(n: int): SizeSpec = SizeSpec(kind: skFixed, value: n)
 proc flex*(weight = 1): SizeSpec = SizeSpec(kind: skFlex, value: weight)
@@ -30,6 +34,10 @@ method render*(w: Widget, buf: var Buffer, area: Rect, ctx: RenderCtx) {.base.} 
   discard
 
 method handleKey*(w: Widget, k: Key): bool {.base.} = false
+
+method handleMouse*(w: Widget, m: Mouse, area: Rect): bool {.base.} =
+  ## `area` is the rectangle the widget was rendered into last frame.
+  false
 
 method add*(w: Widget, child: Widget) {.base.} =
   raise newException(ValueError, "this widget is not a container")
@@ -150,6 +158,8 @@ method render*(b: Box, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   for i, r in rects:
     let clipped = intersect(r, inr)
     if not clipped.isEmpty:
+      if b.children[i].focusable:
+        ctx.hits.add (w: b.children[i], area: clipped)
       b.children[i].render(buf, clipped, ctx)
 
 proc newBox*(dir: Dir; gap = 0; padding = 0; border = bkNone; title = "";

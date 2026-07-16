@@ -54,13 +54,18 @@ Signal ──changes──▶ App marks dirty ──▶ view() rebuilds widget t
   diffed and only changed cells are written, with minimal cursor moves and
   SGR changes.
 - **`term.nim`** — raw mode, alternate screen, SIGWINCH resize handling,
-  and an escape-sequence key parser (arrows, function keys, ctrl/alt
-  chords, UTF-8). POSIX only; no ncurses, no external packages.
+  and an escape-sequence parser for keys (arrows, function keys, ctrl/alt
+  chords, UTF-8) and SGR mouse events (click, wheel). POSIX only; no
+  ncurses, no external packages. `feedInput` injects bytes for tests and
+  programmatic driving.
 - **`dsl.nim`** — the `tui` macro. It only rewrites nesting into
   constructor-plus-`add` calls, so everything inside is ordinary Nim.
 - **`app.nim`** — the event loop: poll input with timer-aware timeouts,
-  dispatch keys (focused widget → global handler → defaults), run timers,
-  rebuild when dirty. Tab / shift-tab cycle focus automatically.
+  dispatch keys (focused widget → global handler → defaults) and mouse
+  events (hit-tested against last frame's layout: click focuses and acts —
+  select a list row, switch a tab, place the input cursor; wheel scrolls),
+  run timers, rebuild when dirty. Tab / shift-tab cycle focus
+  automatically; mark a widget `autofocus = true` to start focused.
 
 State lives in signals you own; the view is a pure function of them,
 rebuilt per dirty frame and diffed at the cell level (an Elm-style loop
@@ -108,8 +113,8 @@ nimble test
 v0.1 — core is functional and tested. Not yet done:
 
 - wide-glyph (CJK/emoji) cell widths
-- mouse events
 - scrollable free-form viewport widget
+- mouse drag / motion events (click + wheel are supported)
 - style themes; Windows (via VT sequences) support
 
 ## License

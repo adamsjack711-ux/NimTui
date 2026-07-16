@@ -27,6 +27,34 @@ proc isChar*(k: Key, c: string): bool =
   ## True for a plain (unmodified) character key.
   k.kind == kChar and not k.ctrl and not k.alt and k.ch == c
 
+type
+  MouseKind* = enum
+    mPress, mRelease, mWheelUp, mWheelDown
+
+  MouseButton* = enum
+    mbNone, mbLeft, mbMiddle, mbRight
+
+  Mouse* = object
+    kind*: MouseKind
+    btn*: MouseButton
+    x*, y*: int   ## 0-based screen cell coordinates
+
+  EventKind* = enum
+    ekKey, ekMouse
+
+  Event* = object
+    case kind*: EventKind
+    of ekKey: key*: Key
+    of ekMouse: mouse*: Mouse
+
+proc keyEvent*(k: Key): Event = Event(kind: ekKey, key: k)
+
+proc mouseEvent*(kind: MouseKind, btn: MouseButton, x, y: int): Event =
+  Event(kind: ekMouse, mouse: Mouse(kind: kind, btn: btn, x: x, y: y))
+
+proc isNoneEvent*(e: Event): bool =
+  e.kind == ekKey and e.key.kind == kNone
+
 proc `$`*(k: Key): string =
   case k.kind
   of kChar:

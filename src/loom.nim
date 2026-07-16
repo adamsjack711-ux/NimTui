@@ -4,8 +4,8 @@
 ## via signals, a flex layout engine, and diffed ANSI rendering. Compiles
 ## to a single zero-dependency binary.
 
-import loom/[geometry, style, buffer, events, reactive, widget, widgets, dsl, app]
-export geometry, style, buffer, events, reactive, widget, widgets, dsl, app
+import loom/[geometry, style, buffer, events, reactive, widget, widgets, dsl, app, term]
+export geometry, style, buffer, events, reactive, widget, widgets, dsl, app, term
 
 const loomVersion* = "0.1.0"
 

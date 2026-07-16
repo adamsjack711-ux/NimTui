@@ -11,7 +11,7 @@ srcDir        = "src"
 requires "nim >= 2.0.0"
 
 task test, "Run the test suite":
-  for f in ["test_buffer", "test_reactive", "test_layout", "test_dsl"]:
+  for f in ["test_buffer", "test_reactive", "test_layout", "test_dsl", "test_events"]:
     exec "nim c -r --hints:off tests/" & f & ".nim"
 
 task demo, "Build the dashboard demo (release, size-optimized)":

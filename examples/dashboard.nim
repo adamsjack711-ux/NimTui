@@ -105,11 +105,15 @@ frame, so only changed cells are written to the terminal.
 
 Keys:
   q          quit
-  tab        cycle focus (tab bar → filter → process list)
+  tab        cycle focus (the filter starts focused)
   ↑ / ↓      move the process selection
   pgup/pgdn  page through processes
   ← / →      switch tabs (when the tab bar is focused)
   type       filter the process list (when the filter is focused)
+
+Mouse:
+  click      focus a widget, select a row, switch a tab, place the cursor
+  wheel      scroll the process list
 
 The process table is live `ps` output, the load gauge is getloadavg()
 against your core count, and memory comes from vm_stat / /proc/meminfo."""
@@ -129,7 +133,7 @@ proc view(): Widget =
       if activeTab.get == 0:
         hbox:
           panel(title = "processes — " & $rows.len, width = flex(3)):
-            input(filter, placeholder = "type to filter…")
+            input(filter, placeholder = "type to filter…", autofocus = true)
             rule()
             list(rows, sel)
           vbox(width = flex(2)):
@@ -143,7 +147,7 @@ proc view(): Widget =
       else:
         panel(title = "help"):
           text(helpText, wrap = true)
-      text(" q quit · tab focus · ↑/↓ select · ←/→ tabs",
+      text(" q quit · tab focus · ↑/↓ select · ←/→ tabs · mouse works",
            style = style(fg = clBrightBlack), height = fixed(1))
 
 # ---- wiring ----------------------------------------------------------------

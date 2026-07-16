@@ -18,7 +18,9 @@ type
     dirty: bool
     running: bool
     focusIdx: int
+    focusInited: bool
     focusables: seq[Widget]
+    lastHits: seq[HitRegion]
     term: Terminal
     root: Widget
 
@@ -45,16 +47,23 @@ proc quit*(app: App) =
 proc rebuild(app: App) =
   clearDeps(app.obs)
   var buf = newBuffer(app.term.width, app.term.height)
+  let ctx = RenderCtx()
   withTracking(app.obs):
     app.root = app.viewFn()
     app.focusables = @[]
     collectFocusable(app.root, app.focusables)
+    if not app.focusInited and app.focusables.len > 0:
+      app.focusInited = true
+      for i, w in app.focusables:
+        if w.autofocus:
+          app.focusIdx = i
+          break
     if app.focusIdx >= app.focusables.len:
       app.focusIdx = 0
-    var ctx = RenderCtx()
     if app.focusables.len > 0:
       ctx.focused = app.focusables[app.focusIdx]
     app.root.render(buf, rect(0, 0, buf.w, buf.h), ctx)
+  app.lastHits = ctx.hits
   app.term.draw(buf)
   app.dirty = false
 
@@ -63,21 +72,47 @@ proc cycleFocus(app: App, dir: int) =
   app.focusIdx = (app.focusIdx + dir + app.focusables.len) mod app.focusables.len
   app.dirty = true
 
-proc dispatch(app: App, k: Key) =
+proc dispatchKey(app: App, k: Key) =
   var handled = false
   if app.focusIdx < app.focusables.len:
     handled = app.focusables[app.focusIdx].handleKey(k)
   if not handled and app.keyFn != nil:
     handled = app.keyFn(k)
-  if not handled:
-    case k.kind
-    of kTab: app.cycleFocus(1)
-    of kBackTab: app.cycleFocus(-1)
-    of kChar:
-      if k.ctrl and k.ch == "c":
-        app.quit()
-    else:
-      discard
+  if handled:
+    # Handled events may change widget-internal state (e.g. an input's
+    # cursor) that no signal tracks, so always repaint.
+    app.dirty = true
+    return
+  case k.kind
+  of kTab: app.cycleFocus(1)
+  of kBackTab: app.cycleFocus(-1)
+  of kChar:
+    if k.ctrl and k.ch == "c":
+      app.quit()
+  else:
+    discard
+
+proc dispatchMouse(app: App, m: Mouse) =
+  var target: Widget = nil
+  var tArea: Rect
+  for i in countdown(app.lastHits.len - 1, 0):
+    if app.lastHits[i].area.contains(m.x, m.y):
+      target = app.lastHits[i].w
+      tArea = app.lastHits[i].area
+      break
+  if target == nil: return
+  if m.kind == mPress:
+    let idx = app.focusables.find(target)
+    if idx >= 0 and idx != app.focusIdx:
+      app.focusIdx = idx
+      app.dirty = true
+  if target.handleMouse(m, tArea):
+    app.dirty = true
+
+proc dispatch(app: App, e: Event) =
+  case e.kind
+  of ekKey: app.dispatchKey(e.key)
+  of ekMouse: app.dispatchMouse(e.mouse)
 
 proc nextTimeoutMs(app: App): int =
   result = 250
@@ -102,13 +137,13 @@ proc run*(app: App) =
     app.runTimers()
     app.rebuild()
     while app.running:
-      var k = pollKey(app.nextTimeoutMs())
+      var ev = pollEvent(app.nextTimeoutMs())
       var drained = 0
-      while k.isSome and drained < 64:
-        app.dispatch(k.get)
+      while ev.isSome and drained < 64:
+        app.dispatch(ev.get)
         if not app.running: break
         inc drained
-        k = pollKey(0)
+        ev = pollEvent(0)
       if not app.running: break
       app.runTimers()
       if app.term.checkResize():

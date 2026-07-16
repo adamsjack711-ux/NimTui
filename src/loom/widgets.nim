@@ -181,6 +181,7 @@ type List* = ref object of Widget
   selected*: Signal[int]   ## nil = non-interactive log view (tails output)
   style*: Style
   lastH: int               ## viewport height from the last render (page keys)
+  lastOff: int             ## scroll offset from the last render (mouse hits)
 
 method minSize*(l: List, avail: Size): Size =
   var w = 0
@@ -198,6 +199,7 @@ method render*(l: List, buf: var Buffer, area: Rect, ctx: RenderCtx) =
     if sel >= area.h: off = sel - area.h + 1
   elif l.items.len > area.h:
     off = l.items.len - area.h   # follow the tail
+  l.lastOff = off
   for row in 0 ..< area.h:
     let idx = off + row
     if idx >= l.items.len: break
@@ -231,11 +233,28 @@ method handleKey*(l: List, k: Key): bool =
   l.selected.set s
   true
 
+method handleMouse*(l: List, m: Mouse, area: Rect): bool =
+  if l.selected == nil or l.items.len == 0: return false
+  case m.kind
+  of mPress:
+    if m.btn != mbLeft: return false
+    let idx = l.lastOff + (m.y - area.y)
+    if idx < 0 or idx >= l.items.len: return false
+    l.selected.set idx
+    true
+  of mWheelUp:
+    l.selected.set max(0, clamp(l.selected.peek, 0, l.items.high) - 1)
+    true
+  of mWheelDown:
+    l.selected.set min(l.items.high, clamp(l.selected.peek, 0, l.items.high) + 1)
+    true
+  else: false
+
 proc list*(items: seq[string]; selected: Signal[int] = nil; style = Style();
-           width = flex(1); height = flex(1)): List =
+           autofocus = false; width = flex(1); height = flex(1)): List =
   List(items: items, selected: selected, style: style,
        widthSpec: width, heightSpec: height,
-       focusable: selected != nil)
+       focusable: selected != nil, autofocus: autofocus)
 
 # ---- Table -----------------------------------------------------------------
 
@@ -292,6 +311,7 @@ type
     state*: InputState
     placeholder*: string
     style*: Style
+    lastOff: int   ## horizontal scroll offset from the last render
 
 proc inputState*(initial = ""): InputState =
   InputState(text: signal(initial), cursor: initial.runeLen)
@@ -304,11 +324,12 @@ method render*(inp: Input, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   let focused = ctx.focused == inp
   let runes = inp.state.text.get.toRunes
   let cur = clamp(inp.state.cursor, 0, runes.len)
+  let off = max(0, cur - area.w + 1)
+  inp.lastOff = off
   if runes.len == 0 and inp.placeholder.len > 0:
     discard buf.write(area.x, area.y, inp.placeholder,
                       Style(fg: clBrightBlack, attrs: {aItalic}), area.w)
   else:
-    let off = max(0, cur - area.w + 1)
     let visible = runes[min(off, runes.len) .. ^1]
     discard buf.write(area.x, area.y, runesToStr(visible), inp.style, area.w)
   if focused:
@@ -342,10 +363,17 @@ method handleKey*(inp: Input, k: Key): bool =
   inp.state.text.set runesToStr(runes)
   true
 
+method handleMouse*(inp: Input, m: Mouse, area: Rect): bool =
+  if m.kind != mPress or m.btn != mbLeft: return false
+  let runes = inp.state.text.peek.toRunes
+  inp.state.cursor = clamp(inp.lastOff + (m.x - area.x), 0, runes.len)
+  true
+
 proc input*(state: InputState; placeholder = ""; style = Style();
-            width = flex(1); height = fixed(1)): Input =
+            autofocus = false; width = flex(1); height = fixed(1)): Input =
   Input(state: state, placeholder: placeholder, style: style,
-        widthSpec: width, heightSpec: height, focusable: true)
+        widthSpec: width, heightSpec: height, focusable: true,
+        autofocus: autofocus)
 
 # ---- Tabs ------------------------------------------------------------------
 
@@ -383,7 +411,19 @@ method handleKey*(t: Tabs, k: Key): bool =
   else: return false
   true
 
+method handleMouse*(t: Tabs, m: Mouse, area: Rect): bool =
+  if m.kind != mPress or m.btn != mbLeft: return false
+  var x = 0
+  for i, label in t.labels:
+    let w = label.runeLen + 2   # " label " segment
+    if m.x - area.x < x + w:
+      t.active.set i
+      return true
+    x += w + 1                  # separator space
+  false
+
 proc tabs*(labels: seq[string]; active: Signal[int]; style = Style();
-           width = flex(1); height = fixed(1)): Tabs =
+           autofocus = false; width = flex(1); height = fixed(1)): Tabs =
   Tabs(labels: labels, active: active, style: style,
-       widthSpec: width, heightSpec: height, focusable: true)
+       widthSpec: width, heightSpec: height, focusable: true,
+       autofocus: autofocus)
