@@ -105,7 +105,7 @@ frame, so only changed cells are written to the terminal.
 
 Keys:
   q          quit
-  tab        cycle focus (filter → process list → tabs)
+  tab        cycle focus (tab bar → filter → process list)
   ↑ / ↓      move the process selection
   pgup/pgdn  page through processes
   ← / →      switch tabs (when the tab bar is focused)
