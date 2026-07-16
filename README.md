@@ -4,6 +4,10 @@ A reactive terminal UI framework for Nim. Declarative widget trees via a
 macro DSL, fine-grained reactivity via signals, a flex layout engine, and
 diffed ANSI rendering — compiled to a single zero-dependency binary.
 
+![loom dashboard — reactive filtering, live themes, keyed selection, mouse, scrollable help](docs/dashboard.gif)
+
+> The dashboard above is the bundled example — run it yourself with `npx nimtui`. Everything on screen is a plain Nim value in a `Signal`; typing filters the list, `t` restyles the whole app in one repaint, and selection is keyed by PID so it survives the live re-sort.
+
 ```nim
 import loom
 
