@@ -120,12 +120,16 @@ sidebar (keyed selection that survives folding) beside a markdown-ish
 preview rendered as styled `spans` inside a scrollable `viewport`, a
 raw-source tab, and a quick-capture input.
 
+![journal example — split-pane notes app](docs/journal.gif)
+
 **Chess** — a hot-seat chess game whose board is one custom widget
 (`render` + `handleKey` + `handleMouse` methods) riding the framework's
 focus, hit-testing and dirty-repaint machinery. Full legal moves
 (castling, en passant, promotion, mate/stalemate detection), click-click
 or drag-and-drop with hover highlights, keyboard cursor, undo, board
-flip.
+flip. Every move below is played with the mouse:
+
+![chess example — custom board widget, played by mouse](docs/chess.gif)
 
 Build them from this repo:
 
