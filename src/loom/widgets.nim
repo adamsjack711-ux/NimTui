@@ -510,35 +510,76 @@ type
 
 proc flowSpans(parts: seq[Span], width: int): seq[seq[Span]] =
   ## Greedy word-wrap across styled fragments. '\n' forces a break.
+  ## Words split on explicit spaces only — a fragment boundary with no
+  ## space around it (styled text directly followed by punctuation)
+  ## stays glued, so one word may carry several styles.
+  var words: seq[seq[Span]]   # each word = styled pieces glued together
+  var breaks: seq[int]        # word index a '\n' forces a break before
+  var cur: seq[Span]
+  var seg = ""
+
+  proc pushSeg(st: Style) =
+    if seg.len > 0:
+      if cur.len > 0 and cur[^1].style == st:
+        cur[^1].text.add seg
+      else:
+        cur.add (text: seg, style: st)
+      seg = ""
+
+  proc pushWord() =
+    if cur.len > 0:
+      words.add cur
+      cur = @[]
+
+  for part in parts:
+    for ch in part.text:
+      case ch
+      of ' ':
+        pushSeg(part.style)
+        pushWord()
+      of '\n':
+        pushSeg(part.style)
+        pushWord()
+        breaks.add words.len
+      else:
+        seg.add ch
+    pushSeg(part.style)   # the word may continue into the next fragment
+  pushWord()
+
   var line: seq[Span]
   var lineW = 0
+  var bi = 0
   template flush() =
     result.add line
     line = @[]
     lineW = 0
-  for part in parts:
-    let subs = part.text.split('\n')
-    for li, sub in subs:
-      if li > 0: flush()
-      for word in sub.split(' '):
-        if word.len == 0: continue
-        let wl = word.strWidth
-        if lineW == 0:
-          line.add (word, part.style)
-          lineW = wl
-        elif width <= 0 or lineW + 1 + wl <= width:
-          # join with a space; merge into the previous fragment when the
-          # style matches to keep the seq small
-          if line.len > 0 and line[^1].style == part.style:
-            line[^1].text.add " " & word
-          else:
-            line[^1].text.add " "
-            line.add (word, part.style)
-          lineW += 1 + wl
-        else:
-          flush()
-          line.add (word, part.style)
-          lineW = wl
+  for wi, w in words:
+    while bi < breaks.len and breaks[bi] <= wi:
+      flush()
+      inc bi
+    var ww = 0
+    for p in w:
+      ww += p.text.strWidth
+    if lineW == 0:
+      line = w
+      lineW = ww
+    elif width <= 0 or lineW + 1 + ww <= width:
+      # join with a space; merge into the previous fragment when the
+      # style matches to keep the seq small
+      if line[^1].style == w[0].style:
+        line[^1].text.add " " & w[0].text
+        line.add w[1 .. ^1]
+      else:
+        line[^1].text.add " "
+        line.add w
+      lineW += 1 + ww
+    else:
+      flush()
+      line = w
+      lineW = ww
+  while bi < breaks.len:
+    flush()
+    inc bi
   if line.len > 0 or result.len == 0:
     result.add line
 

@@ -94,6 +94,20 @@ suite "wrapped spans":
     let s = spans([("one two three", Style())], wrap = true)
     check s.minSize(size(5, 10)).h == 3
 
+  test "spaceless fragment boundaries stay glued":
+    # styled text directly followed by punctuation must not grow a space
+    let s = spans([("see ", Style()), ("code", style(attrs = {aBold})),
+                   (") after", Style())], wrap = true)
+    let snap = renderToString(s, 20, 1)
+    check snap.startsWith("see code) after")
+
+  test "a glued word wraps as one unit":
+    let s = spans([("aaaa", style(attrs = {aBold})), ("bb cc", Style())],
+                  wrap = true)
+    # "aaaabb" (6 wide) can't fit in 5 columns next to nothing — it is one
+    # word, so "cc" starts the next line
+    check s.minSize(size(6, 10)).h == 2
+
 suite "drag":
   test "SGR motion-with-button parses as drag":
     feedInput "\e[<32;4;2M"
