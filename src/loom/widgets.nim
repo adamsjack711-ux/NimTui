@@ -89,7 +89,7 @@ method render*(r: Rule, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   for x in area.x ..< area.right:
     buf.put(x, area.y, "─", r.style)
 
-proc rule*(style = Style(fg: Color(kind: ckAnsi, idx: 8))): Rule =
+proc rule*(style = Style(fg: clBrightBlack)): Rule =
   Rule(style: style, widthSpec: flex(1), heightSpec: fixed(1))
 
 # ---- Gauge -----------------------------------------------------------------
@@ -178,10 +178,35 @@ proc sparkline*(data: seq[float]; color = clCyan; zeroBase = true;
 
 type List* = ref object of Widget
   items*: seq[string]
-  selected*: Signal[int]   ## nil = non-interactive log view (tails output)
+  selected*: Signal[int]        ## positional selection
+  selectedKey*: Signal[string]  ## keyed selection: tracks `keys[i]`, so it
+                                ## survives reordered/filtered data
+  keys*: seq[string]            ## row keys, parallel to items (keyed mode)
   style*: Style
-  lastH: int               ## viewport height from the last render (page keys)
-  lastOff: int             ## scroll offset from the last render (mouse hits)
+  lastH: int    ## viewport height from the last render (page keys)
+  lastOff: int  ## scroll offset from the last render (mouse hits)
+
+proc interactive(l: List): bool =
+  l.selected != nil or l.selectedKey != nil
+
+proc curIndex(l: List, tracked: bool): int =
+  ## Current selection as an index into items; -1 when nothing selected.
+  if l.selectedKey != nil:
+    let k = if tracked: l.selectedKey.get else: l.selectedKey.peek
+    result = l.keys.find(k)
+    if result >= l.items.len: result = -1
+  elif l.selected != nil:
+    let s = if tracked: l.selected.get else: l.selected.peek
+    result = clamp(s, 0, max(0, l.items.high))
+  else:
+    result = -1
+
+proc setIndex(l: List, i: int) =
+  if l.selectedKey != nil:
+    if i >= 0 and i < min(l.keys.len, l.items.len):
+      l.selectedKey.set l.keys[i]
+  elif l.selected != nil:
+    l.selected.set i
 
 method minSize*(l: List, avail: Size): Size =
   var w = 0
@@ -192,12 +217,11 @@ method minSize*(l: List, avail: Size): Size =
 method render*(l: List, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   if area.isEmpty: return
   l.lastH = area.h
-  var sel = -1
+  let sel = if l.interactive: l.curIndex(tracked = true) else: -1
   var off = 0
-  if l.selected != nil:
-    sel = clamp(l.selected.get, 0, max(0, l.items.high))
-    if sel >= area.h: off = sel - area.h + 1
-  elif l.items.len > area.h:
+  if sel >= area.h:
+    off = sel - area.h + 1
+  elif not l.interactive and l.items.len > area.h:
     off = l.items.len - area.h   # follow the tail
   l.lastOff = off
   for row in 0 ..< area.h:
@@ -210,7 +234,7 @@ method render*(l: List, buf: var Buffer, area: Rect, ctx: RenderCtx) =
       st.attrs.incl aReverse
       if ctx.focused != l: st.attrs.incl aDim
       prefix = "▸ "
-    elif sel >= 0:
+    elif l.interactive:
       prefix = "  "
     var line = prefix & l.items[idx]
     line = clipRunes(line, area.w)
@@ -219,8 +243,8 @@ method render*(l: List, buf: var Buffer, area: Rect, ctx: RenderCtx) =
     discard buf.write(area.x, area.y + row, line, st, area.w)
 
 method handleKey*(l: List, k: Key): bool =
-  if l.selected == nil or l.items.len == 0: return false
-  var s = clamp(l.selected.peek, 0, l.items.high)
+  if not l.interactive or l.items.len == 0: return false
+  var s = max(0, l.curIndex(tracked = false))
   let page = max(1, l.lastH)
   case k.kind
   of kUp: s = max(0, s - 1)
@@ -230,31 +254,41 @@ method handleKey*(l: List, k: Key): bool =
   of kPageUp: s = max(0, s - page)
   of kPageDown: s = min(l.items.high, s + page)
   else: return false
-  l.selected.set s
+  l.setIndex s
   true
 
 method handleMouse*(l: List, m: Mouse, area: Rect): bool =
-  if l.selected == nil or l.items.len == 0: return false
+  if not l.interactive or l.items.len == 0: return false
   case m.kind
   of mPress:
     if m.btn != mbLeft: return false
     let idx = l.lastOff + (m.y - area.y)
     if idx < 0 or idx >= l.items.len: return false
-    l.selected.set idx
+    l.setIndex idx
     true
   of mWheelUp:
-    l.selected.set max(0, clamp(l.selected.peek, 0, l.items.high) - 1)
+    l.setIndex max(0, l.curIndex(tracked = false) - 1)
     true
   of mWheelDown:
-    l.selected.set min(l.items.high, clamp(l.selected.peek, 0, l.items.high) + 1)
+    l.setIndex min(l.items.high, max(0, l.curIndex(tracked = false)) + 1)
     true
   else: false
 
 proc list*(items: seq[string]; selected: Signal[int] = nil; style = Style();
-           autofocus = false; width = flex(1); height = flex(1)): List =
+           autofocus = false; id = ""; width = flex(1); height = flex(1)): List =
+  ## Positional selection (or a passive tailing view when `selected` is nil).
   List(items: items, selected: selected, style: style,
        widthSpec: width, heightSpec: height,
-       focusable: selected != nil, autofocus: autofocus)
+       focusable: selected != nil, autofocus: autofocus, id: id)
+
+proc list*(items: seq[string]; selectedKey: Signal[string]; keys: seq[string];
+           style = Style(); autofocus = false; id = "";
+           width = flex(1); height = flex(1)): List =
+  ## Keyed selection: `keys` parallels `items`; the signal holds the key of
+  ## the selected row, so selection follows the row through re-sorts.
+  List(items: items, selectedKey: selectedKey, keys: keys, style: style,
+       widthSpec: width, heightSpec: height,
+       focusable: true, autofocus: autofocus, id: id)
 
 # ---- Table -----------------------------------------------------------------
 
@@ -305,7 +339,8 @@ proc table*(headers: seq[string]; rows: seq[seq[string]];
 type
   InputState* = ref object
     text*: Signal[string]
-    cursor*: int   ## rune index
+    cursor*: Signal[int]   ## rune index; a signal so cursor-only changes
+                           ## repaint like any other state change
 
   Input* = ref object of Widget
     state*: InputState
@@ -314,7 +349,7 @@ type
     lastOff: int   ## horizontal scroll offset from the last render
 
 proc inputState*(initial = ""): InputState =
-  InputState(text: signal(initial), cursor: initial.runeLen)
+  InputState(text: signal(initial), cursor: signal(initial.runeLen))
 
 method minSize*(i: Input, avail: Size): Size =
   size(max(i.state.text.peek.runeLen + 1, i.placeholder.runeLen), 1)
@@ -323,7 +358,7 @@ method render*(inp: Input, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   if area.isEmpty: return
   let focused = ctx.focused == inp
   let runes = inp.state.text.get.toRunes
-  let cur = clamp(inp.state.cursor, 0, runes.len)
+  let cur = clamp(inp.state.cursor.get, 0, runes.len)
   let off = max(0, cur - area.w + 1)
   inp.lastOff = off
   if runes.len == 0 and inp.placeholder.len > 0:
@@ -333,14 +368,18 @@ method render*(inp: Input, buf: var Buffer, area: Rect, ctx: RenderCtx) =
     let visible = runes[min(off, runes.len) .. ^1]
     discard buf.write(area.x, area.y, runesToStr(visible), inp.style, area.w)
   if focused:
-    let cx = area.x + min(cur, area.w - 1) - (if cur >= area.w: cur - area.w + 1 else: 0)
+    let cx = area.x + cur - off
     var cell = buf[cx, area.y]
     cell.style.attrs.incl aReverse
     buf[cx, area.y] = cell
 
+proc edit(inp: Input, runes: seq[Rune], cur: int) =
+  inp.state.cursor.set clamp(cur, 0, runes.len)
+  inp.state.text.set runesToStr(runes)
+
 method handleKey*(inp: Input, k: Key): bool =
   var runes = inp.state.text.peek.toRunes
-  var cur = clamp(inp.state.cursor, 0, runes.len)
+  var cur = clamp(inp.state.cursor.peek, 0, runes.len)
   case k.kind
   of kChar:
     if k.ctrl or k.alt: return false
@@ -359,21 +398,31 @@ method handleKey*(inp: Input, k: Key): bool =
   of kHome: cur = 0
   of kEnd: cur = runes.len
   else: return false
-  inp.state.cursor = cur
-  inp.state.text.set runesToStr(runes)
+  inp.edit(runes, cur)
   true
 
 method handleMouse*(inp: Input, m: Mouse, area: Rect): bool =
   if m.kind != mPress or m.btn != mbLeft: return false
   let runes = inp.state.text.peek.toRunes
-  inp.state.cursor = clamp(inp.lastOff + (m.x - area.x), 0, runes.len)
+  inp.state.cursor.set clamp(inp.lastOff + (m.x - area.x), 0, runes.len)
+  true
+
+method handlePaste*(inp: Input, s: string): bool =
+  ## Single-line field: control characters become spaces.
+  var runes = inp.state.text.peek.toRunes
+  var cur = clamp(inp.state.cursor.peek, 0, runes.len)
+  for r in s.runes:
+    let clean = if r.int32 < 32: Rune(' ') else: r
+    runes.insert(clean, cur)
+    inc cur
+  inp.edit(runes, cur)
   true
 
 proc input*(state: InputState; placeholder = ""; style = Style();
-            autofocus = false; width = flex(1); height = fixed(1)): Input =
+            autofocus = false; id = ""; width = flex(1); height = fixed(1)): Input =
   Input(state: state, placeholder: placeholder, style: style,
         widthSpec: width, heightSpec: height, focusable: true,
-        autofocus: autofocus)
+        autofocus: autofocus, id: id)
 
 # ---- Tabs ------------------------------------------------------------------
 
@@ -423,7 +472,39 @@ method handleMouse*(t: Tabs, m: Mouse, area: Rect): bool =
   false
 
 proc tabs*(labels: seq[string]; active: Signal[int]; style = Style();
-           autofocus = false; width = flex(1); height = fixed(1)): Tabs =
+           autofocus = false; id = ""; width = flex(1); height = fixed(1)): Tabs =
   Tabs(labels: labels, active: active, style: style,
        widthSpec: width, heightSpec: height, focusable: true,
-       autofocus: autofocus)
+       autofocus: autofocus, id: id)
+
+# ---- Spans (rich single-line text) ------------------------------------------
+
+type
+  Span* = tuple[text: string, style: Style]
+
+  SpanLine* = ref object of Widget
+    parts*: seq[Span]
+    align*: Align
+
+method minSize*(s: SpanLine, avail: Size): Size =
+  var w = 0
+  for p in s.parts: w += p.text.runeLen
+  size(min(w, max(avail.w, 0)), 1)
+
+method render*(s: SpanLine, buf: var Buffer, area: Rect, ctx: RenderCtx) =
+  if area.isEmpty: return
+  var total = 0
+  for p in s.parts: total += p.text.runeLen
+  var x = case s.align
+    of alLeft: area.x
+    of alCenter: area.x + max(0, (area.w - total) div 2)
+    of alRight: area.x + max(0, area.w - total)
+  for p in s.parts:
+    if x >= area.right: break
+    x += buf.write(x, area.y, p.text, p.style, area.right - x)
+
+proc spans*(parts: openArray[Span]; align = alLeft;
+            width = flex(1); height = fixed(1)): SpanLine =
+  ## One line of differently-styled fragments, e.g.
+  ## `spans([("ok", style(fg = clGreen)), (" 34 checks", Style())])`.
+  SpanLine(parts: @parts, align: align, widthSpec: width, heightSpec: height)

@@ -5,7 +5,10 @@
 ## to a single zero-dependency binary.
 
 import loom/[geometry, style, buffer, events, reactive, widget, widgets, dsl, app, term]
-export geometry, style, buffer, events, reactive, widget, widgets, dsl, app, term
+export geometry, style, buffer, events, reactive, widget, widgets, dsl, app
+# Terminal lifecycle (setup/restore/draw/checkResize) is the App's job;
+# only the input/automation surface is public.
+export term except setup, restore, draw, checkResize, setMouse
 
 const loomVersion* = "0.1.0"
 

@@ -17,6 +17,8 @@ type
     children*: seq[Widget]
     focusable*: bool
     autofocus*: bool   ## receives initial focus (first match wins)
+    id*: string        ## optional stable identity: focus survives rebuilds
+                       ## that change the tree shape
 
   HitRegion* = tuple[w: Widget, area: Rect]
 
@@ -38,6 +40,8 @@ method handleKey*(w: Widget, k: Key): bool {.base.} = false
 method handleMouse*(w: Widget, m: Mouse, area: Rect): bool {.base.} =
   ## `area` is the rectangle the widget was rendered into last frame.
   false
+
+method handlePaste*(w: Widget, s: string): bool {.base.} = false
 
 method add*(w: Widget, child: Widget) {.base.} =
   raise newException(ValueError, "this widget is not a container")
@@ -100,12 +104,14 @@ method minSize*(b: Box, avail: Size): Size =
 
 proc layout*(b: Box, inner: Rect): seq[Rect] =
   ## Solve child rectangles inside `inner`: fixed sizes first, then
-  ## content-measured autos, then remaining space split by flex weight.
+  ## content-measured autos (each against the space still remaining),
+  ## then remaining space split by flex weight.
   let n = b.children.len
   if n == 0: return
   let mainTotal = if b.dir == dirH: inner.w else: inner.h
   var mains = newSeq[int](n)
   var flexIdx: seq[int]
+  var autoIdx: seq[int]
   var used = b.gap * (n - 1)
   for i, c in b.children:
     let spec = b.mainSpec(c)
@@ -114,11 +120,17 @@ proc layout*(b: Box, inner: Rect): seq[Rect] =
       mains[i] = max(0, spec.value)
       used += mains[i]
     of skAuto:
-      let m = c.minSize(size(inner.w, inner.h))
-      mains[i] = if b.dir == dirH: m.w else: m.h
-      used += mains[i]
+      autoIdx.add i
     of skFlex:
       flexIdx.add i
+  for i in autoIdx:
+    let availMain = max(0, mainTotal - used)
+    let avail =
+      if b.dir == dirH: size(availMain, inner.h)
+      else: size(inner.w, availMain)
+    let m = b.children[i].minSize(avail)
+    mains[i] = if b.dir == dirH: m.w else: m.h
+    used += mains[i]
   var remaining = max(0, mainTotal - used)
   var totalWeight = 0
   for i in flexIdx:

@@ -88,6 +88,14 @@ proc dump*(b: Buffer): string =
       let c = b.cells[y * b.w + x]
       result.add (if c.ch.len == 0: " " else: c.ch)
 
+proc attrMap*(b: Buffer, attr: Attr): string =
+  ## Grid of '#' where `attr` is set and '.' elsewhere — style-aware
+  ## snapshot assertions for tests.
+  for y in 0 ..< b.h:
+    if y > 0: result.add "\n"
+    for x in 0 ..< b.w:
+      result.add (if attr in b.cells[y * b.w + x].style.attrs: '#' else: '.')
+
 proc diffToAnsi*(prev, next: Buffer): string =
   ## Minimal ANSI update transforming the screen showing `prev` into `next`.
   ## If dimensions differ the whole screen is cleared and redrawn.

@@ -13,6 +13,7 @@ type
 
   SignalBase* = ref object of RootObj
     subs: seq[Observer]
+    owner: Observer   ## the effect driving a computed, for disposal
 
   Signal*[T] = ref object of SignalBase
     v: T
@@ -54,6 +55,10 @@ proc track(s: SignalBase) =
       o.deps.add s
 
 proc notify(s: SignalBase) =
+  # Propagation is simple breadth-order, not topological: diamond-shaped
+  # dependency graphs may recompute a downstream computed more than once
+  # per change (a "glitch"). Dedup below is O(n^2) in pending observers.
+  # Both are fine at UI scale; don't build a data pipeline on this.
   for o in s.subs:
     if o.active and o notin pendingObs:
       pendingObs.add o
@@ -101,7 +106,13 @@ proc effect*(fn: proc ()): Observer {.discardable.} =
     fn()
 
 proc computed*[T](fn: proc (): T): Signal[T] =
-  ## A read-only signal derived from other signals.
+  ## A read-only signal derived from other signals. Stop it with `dispose`.
   let s = signal(default(T))
-  effect(proc () = s.set fn())
+  s.owner = effect(proc () = s.set fn())
   s
+
+proc dispose*(s: SignalBase) =
+  ## Stop a computed signal from recomputing. No-op for plain signals.
+  if s.owner != nil:
+    s.owner.dispose()
+    s.owner = nil

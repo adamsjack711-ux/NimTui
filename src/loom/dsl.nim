@@ -2,6 +2,9 @@
 ## constructor calls plus `add` — plain Nim control flow (`if`, `case`,
 ## `for`, `while`, `let`) works anywhere inside.
 ##
+## Every bare expression inside a block is treated as a child widget.
+## To call a proc for its side effect, use `discard` (or a `let`).
+##
 ## ```nim
 ## let root = tui:
 ##   vbox(gap = 1):

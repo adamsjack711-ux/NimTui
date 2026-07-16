@@ -41,6 +41,22 @@ suite "key parsing":
     check pollEvent(0).get.key.kind == kPageDown
     check pollEvent(0).get.key.kind == kDelete
 
+  test "modified arrows carry ctrl/shift/alt":
+    feedInput "\e[1;5C\e[1;2A\e[1;3D"
+    var k = pollEvent(0).get.key
+    check k.kind == kRight and k.ctrl and not k.shift
+    k = pollEvent(0).get.key
+    check k.kind == kUp and k.shift
+    k = pollEvent(0).get.key
+    check k.kind == kLeft and k.alt
+
+  test "bracketed paste becomes one event":
+    feedInput "\e[200~hello\nworld\e[201~\e[B"
+    let e = pollEvent(0).get
+    check e.kind == ekPaste
+    check e.paste == "hello\nworld"
+    check pollEvent(0).get.key.kind == kDown
+
 suite "mouse parsing":
   test "SGR left press and release":
     feedInput "\e[<0;5;3M"
@@ -101,10 +117,30 @@ suite "mouse on widgets":
     discard renderToString(inp, 10, 1)
     check inp.handleMouse(Mouse(kind: mPress, btn: mbLeft, x: 2, y: 0),
                           rect(0, 0, 10, 1))
-    check st.cursor == 2
+    check st.cursor.peek == 2
+
+  test "cursor cell is correct when text overflows the width":
+    # regression: cursor rendered 2 cells left of its true position
+    let st = inputState("abcdef")   # cursor at end (index 6), width 5
+    let inp = input(st)
+    var buf = newBuffer(5, 1)
+    let ctx = RenderCtx()
+    ctx.focused = inp
+    inp.render(buf, rect(0, 0, 5, 1), ctx)
+    check attrMap(buf, aReverse) == "....#"
 
 suite "autofocus":
   test "constructors carry the flag":
     check input(inputState(), autofocus = true).autofocus
     check list(@["x"], signal(0), autofocus = true).autofocus
     check not tabs(@["a"], signal(0)).autofocus
+
+suite "spans":
+  test "fragments render sequentially with their own styles":
+    let s = spans([("ok", style(fg = clGreen, attrs = {aBold})),
+                   (" 3 checks", Style())])
+    var buf = newBuffer(12, 1)
+    s.render(buf, rect(0, 0, 12, 1), RenderCtx())
+    check buf.dump == "ok 3 checks "
+    check aBold in buf[0, 0].style.attrs
+    check aBold notin buf[2, 0].style.attrs

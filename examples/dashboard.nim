@@ -49,8 +49,8 @@ proc sampleMem(): float =
       discard
     0.0
 
-proc sampleProcs(): seq[string] =
-  type Row = tuple[cpu: float, line: string]
+proc sampleProcs(): tuple[rows, pids: seq[string]] =
+  type Row = tuple[cpu: float, pid, line: string]
   var rows: seq[Row]
   try:
     let outp = execProcess("ps",
@@ -62,12 +62,13 @@ proc sampleProcs(): seq[string] =
         try: parseFloat(f[1])
         except ValueError: 0.0
       let name = f[3].rsplit('/', maxsplit = 1)[^1]
-      rows.add (cpu, &"{f[0]:>6} {f[1]:>6} {f[2]:>6}  {name}")
+      rows.add (cpu, f[0], &"{f[0]:>6} {f[1]:>6} {f[2]:>6}  {name}")
   except CatchableError:
-    return @["(ps unavailable)"]
+    return (@["(ps unavailable)"], @[""])
   rows.sort do (a, b: Row) -> int: cmp(b.cpu, a.cpu)
   for r in rows[0 .. min(59, rows.high)]:
-    result.add r.line
+    result.rows.add r.line
+    result.pids.add r.pid
 
 # ---- state -----------------------------------------------------------------
 
@@ -78,8 +79,9 @@ var
   loadHist = signal(newSeq[float]())
   memUsed = signal(0.0)
   allProcs = signal(newSeq[string]())
+  allPids = signal(newSeq[string]())
   filter = inputState()
-  sel = signal(0)
+  selPid = signal("")   # keyed selection: follows the process through re-sorts
   activeTab = signal(0)
   clock = signal("")
   logs = signal(newSeq[string]())
@@ -90,11 +92,15 @@ proc pushLog(msg: string) =
   if l.len > 200: l = l[^200 .. ^1]
   logs.set l
 
-proc filteredProcs(): seq[string] =
+proc filteredProcs(): tuple[rows, pids: seq[string]] =
   let f = filter.text.get.toLowerAscii
-  if f.len == 0: return allProcs.get
-  for r in allProcs.get:
-    if f in r.toLowerAscii: result.add r
+  let rows = allProcs.get
+  let pids = allPids.get
+  if f.len == 0: return (rows, pids)
+  for i, r in rows:
+    if f in r.toLowerAscii:
+      result.rows.add r
+      result.pids.add (if i < pids.len: pids[i] else: "")
 
 const helpText = """
 loom dashboard — a demo of the loom TUI framework.
@@ -111,17 +117,23 @@ Keys:
   ← / →      switch tabs (when the tab bar is focused)
   type       filter the process list (when the filter is focused)
 
-Mouse:
+Mouse (press m to toggle; off = terminal text selection works):
   click      focus a widget, select a row, switch a tab, place the cursor
   wheel      scroll the process list
 
-The process table is live `ps` output, the load gauge is getloadavg()
-against your core count, and memory comes from vm_stat / /proc/meminfo."""
+Selection is keyed by PID, so it stays on the same process while the
+table re-sorts. The process table is live `ps` output, the load gauge is
+getloadavg() against your core count, and memory comes from vm_stat /
+/proc/meminfo."""
 
 # ---- view ------------------------------------------------------------------
 
+const
+  hintKey = Style(fg: clBrightYellow)
+  hintDim = Style(fg: clBrightBlack)
+
 proc view(): Widget =
-  let rows = filteredProcs()
+  let (rows, pids) = filteredProcs()
   tui:
     vbox:
       panel(height = fixed(3)):
@@ -129,13 +141,14 @@ proc view(): Widget =
           text(" loom dashboard", style = style(fg = clBrightCyan, attrs = {aBold}))
           spacer()
           text(clock.get & " ", style = style(fg = clBrightBlack))
-      tabs(@["overview", "help"], activeTab)
+      tabs(@["overview", "help"], activeTab, id = "tabbar")
       if activeTab.get == 0:
         hbox:
           panel(title = "processes — " & $rows.len, width = flex(3)):
-            input(filter, placeholder = "type to filter…", autofocus = true)
+            input(filter, placeholder = "type to filter…",
+                  autofocus = true, id = "filter")
             rule()
-            list(rows, sel)
+            list(rows, selPid, keys = pids, id = "procs")
           vbox(width = flex(2)):
             panel(title = "cpu load", height = flex(2)):
               gauge(load1.get / ncpu.float, label = " 1m")
@@ -147,13 +160,16 @@ proc view(): Widget =
       else:
         panel(title = "help"):
           text(helpText, wrap = true)
-      text(" q quit · tab focus · ↑/↓ select · ←/→ tabs · mouse works",
-           style = style(fg = clBrightBlack), height = fixed(1))
+      spans([(" q ", hintKey), ("quit", hintDim), ("  ↑/↓ ", hintKey),
+             ("select", hintDim), ("  tab ", hintKey), ("focus", hintDim),
+             ("  ←/→ ", hintKey), ("tabs", hintDim), ("  m ", hintKey),
+             ("mouse on/off", hintDim)])
 
 # ---- wiring ----------------------------------------------------------------
 
 proc main() =
-  let app = newApp(view)
+  let app = newApp(view, mouse = true)
+  var mouseOn = true
 
   app.every(1000, proc () =
     let l = sampleLoad()
@@ -164,7 +180,9 @@ proc main() =
     loadHist.set h)
 
   app.every(2000, proc () =
-    allProcs.set sampleProcs()
+    let (rows, pids) = sampleProcs()
+    allProcs.set rows
+    allPids.set pids
     memUsed.set sampleMem())
 
   app.every(1000, proc () =
@@ -173,8 +191,15 @@ proc main() =
   app.onKey(proc (k: Key): bool =
     if k.isChar("q"):
       app.quit()
-      return true
-    false)
+      true
+    elif k.isChar("m"):
+      mouseOn = not mouseOn
+      app.setMouse(mouseOn)
+      pushLog(if mouseOn: "mouse capture on"
+              else: "mouse capture off — text selection works")
+      true
+    else:
+      false)
 
   pushLog "dashboard started — " & $ncpu & " cores"
   app.every(10000, proc () =

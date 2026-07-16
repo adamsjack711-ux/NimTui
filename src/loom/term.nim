@@ -1,7 +1,7 @@
 ## Terminal backend: raw mode, alternate screen, diffed drawing, and
 ## escape-sequence key parsing. POSIX only (macOS + Linux), zero deps.
 
-import std/[options, strutils]
+import std/[exitprocs, options, strutils]
 import std/posix except Signal, Key
 import std/termios
 import buffer, geometry, events
@@ -19,9 +19,28 @@ var
   origTios: Termios
   rawOn = false
   winch = false
+  termSig = false
+  exitProcRegistered = false
 
 proc onWinch(sig: cint) {.noconv.} =
   winch = true
+
+proc onTermSig(sig: cint) {.noconv.} =
+  termSig = true
+
+proc quitRequested*(): bool =
+  ## True once SIGTERM/SIGHUP has been received. The app loop checks this
+  ## and shuts down through the normal restore path.
+  termSig
+
+proc emergencyRestore() {.noconv.} =
+  ## Exit-time safety net: undo raw mode and screen modes if the process
+  ## quits without going through Terminal.restore.
+  if rawOn:
+    stdout.write "\e[?2004l\e[?1006l\e[?1000l\e[0m\e[?25h\e[?1049l"
+    stdout.flushFile()
+    discard tcSetAttr(0, TCSAFLUSH, addr origTios)
+    rawOn = false
 
 proc termSize*(): Size =
   var ws: IoctlWinSize
@@ -48,8 +67,13 @@ proc setup*(t: var Terminal) =
     discard tcSetAttr(0, TCSAFLUSH, addr raw)
     rawOn = true
   discard posix.signal(SIGWINCH, onWinch)
-  # alt screen, hidden cursor, clear, then SGR mouse reporting
-  stdout.write "\e[?1049h\e[?25l\e[2J\e[?1000h\e[?1006h"
+  discard posix.signal(SIGTERM, onTermSig)
+  discard posix.signal(SIGHUP, onTermSig)
+  if not exitProcRegistered:
+    addExitProc(emergencyRestore)
+    exitProcRegistered = true
+  # alt screen, hidden cursor, clear, bracketed paste (mouse is opt-in)
+  stdout.write "\e[?1049h\e[?25l\e[2J\e[?2004h"
   stdout.flushFile()
   let s = termSize()
   t.width = s.w
@@ -59,12 +83,19 @@ proc setup*(t: var Terminal) =
 
 proc restore*(t: var Terminal) =
   if not t.active: return
-  stdout.write "\e[?1006l\e[?1000l\e[0m\e[?25h\e[?1049l"
+  stdout.write "\e[?2004l\e[?1006l\e[?1000l\e[0m\e[?25h\e[?1049l"
   stdout.flushFile()
   if rawOn:
     discard tcSetAttr(0, TCSAFLUSH, addr origTios)
     rawOn = false
   t.active = false
+
+proc setMouse*(t: var Terminal, on: bool) =
+  ## Toggle SGR mouse reporting. Off by default: capturing the mouse
+  ## disables the terminal's own text selection/copy.
+  if not t.active: return
+  stdout.write(if on: "\e[?1000h\e[?1006h" else: "\e[?1006l\e[?1000l")
+  stdout.flushFile()
 
 proc draw*(t: var Terminal, next: Buffer) =
   let outp = diffToAnsi(t.prev, next)
@@ -108,6 +139,33 @@ proc readAvailable(): string =
       result.add tmp[i]
     if n < tmp.len: break
 
+proc applyMods(k: var Key, parts: seq[string]) =
+  ## xterm modifier parameter: value - 1 is a bitmask of shift/alt/ctrl.
+  if parts.len < 2: return
+  let mods =
+    (try: parseInt(parts[1]) except ValueError: 1) - 1
+  k.shift = (mods and 1) != 0
+  k.alt = (mods and 2) != 0
+  k.ctrl = (mods and 4) != 0
+
+proc parsePaste(): Event =
+  ## Called after \e[200~. Collects bytes until \e[201~, topping up the
+  ## queue with short waits — a paste burst can span several reads.
+  const terminator = "\e[201~"
+  var tries = 0
+  var endIdx = pendingBuf.find(terminator, pendingPos)
+  while endIdx < 0 and tries < 50 and pendingBuf.len < 1_000_000:
+    if not waitReadable(20): break
+    pendingBuf.add readAvailable()
+    inc tries
+    endIdx = pendingBuf.find(terminator, pendingPos)
+  if endIdx < 0:
+    result = pasteEvent(pendingBuf[pendingPos .. ^1])
+    pendingPos = pendingBuf.len
+  else:
+    result = pasteEvent(pendingBuf[pendingPos ..< endIdx])
+    pendingPos = endIdx + terminator.len
+
 proc parseCsi(): Event =
   ## Called with pendingPos just past "\e[".
   var isMouse = false
@@ -145,30 +203,36 @@ proc parseCsi(): Event =
       of 2: mbRight
       else: mbNone
     return mouseEvent(if final == 'M': mPress else: mRelease, btn, x, y)
+  let parts = params.split(';')
+  var k: Key
   case final
-  of 'A': keyEvent(key(kUp))
-  of 'B': keyEvent(key(kDown))
-  of 'C': keyEvent(key(kRight))
-  of 'D': keyEvent(key(kLeft))
-  of 'H': keyEvent(key(kHome))
-  of 'F': keyEvent(key(kEnd))
-  of 'Z': keyEvent(key(kBackTab))
+  of 'A': k = key(kUp)
+  of 'B': k = key(kDown)
+  of 'C': k = key(kRight)
+  of 'D': k = key(kLeft)
+  of 'H': k = key(kHome)
+  of 'F': k = key(kEnd)
+  of 'Z': k = key(kBackTab)
   of '~':
     let n =
-      try: parseInt(params.split(';')[0])
+      try: parseInt(parts[0])
       except ValueError: 0
     case n
-    of 1, 7: keyEvent(key(kHome))
-    of 2: keyEvent(key(kInsert))
-    of 3: keyEvent(key(kDelete))
-    of 4, 8: keyEvent(key(kEnd))
-    of 5: keyEvent(key(kPageUp))
-    of 6: keyEvent(key(kPageDown))
-    of 11 .. 15: keyEvent(Key(kind: kFn, n: n - 10))
-    of 17 .. 21: keyEvent(Key(kind: kFn, n: n - 11))
-    of 23, 24: keyEvent(Key(kind: kFn, n: n - 12))
-    else: keyEvent(key(kNone))
-  else: keyEvent(key(kNone))
+    of 200: return parsePaste()
+    of 1, 7: k = key(kHome)
+    of 2: k = key(kInsert)
+    of 3: k = key(kDelete)
+    of 4, 8: k = key(kEnd)
+    of 5: k = key(kPageUp)
+    of 6: k = key(kPageDown)
+    of 11 .. 15: k = Key(kind: kFn, n: n - 10)
+    of 17 .. 21: k = Key(kind: kFn, n: n - 11)
+    of 23, 24: k = Key(kind: kFn, n: n - 12)
+    else: k = key(kNone)
+  else: k = key(kNone)
+  if k.kind != kNone:
+    k.applyMods(parts)
+  keyEvent(k)
 
 proc parseOne(depth = 0): Event =
   ## Parse one event from the pending byte queue, advancing pendingPos.
@@ -239,7 +303,9 @@ proc pollEvent*(timeoutMs: int): Option[Event] =
   if pendingPos >= pendingBuf.len:
     pendingBuf = ""
     pendingPos = 0
-    if timeoutMs > 0 and not waitReadable(timeoutMs):
+    # Always select() first — even with timeout 0 — so a non-tty stdin
+    # (pipe, headless driver) can never block the read.
+    if not waitReadable(timeoutMs):
       return none(Event)
     pendingBuf = readAvailable()
     if pendingBuf.len == 0:

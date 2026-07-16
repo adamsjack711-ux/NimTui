@@ -12,11 +12,12 @@ type
     ch*: string   ## UTF-8 text for kChar (single grapheme)
     ctrl*: bool
     alt*: bool
+    shift*: bool  ## only reported for special keys (arrows, fn, ...)
     n*: int       ## function-key number for kFn
 
 proc `==`*(a, b: Key): bool =
   a.kind == b.kind and a.ch == b.ch and a.ctrl == b.ctrl and
-    a.alt == b.alt and a.n == b.n
+    a.alt == b.alt and a.shift == b.shift and a.n == b.n
 
 proc key*(kind: KeyKind): Key = Key(kind: kind)
 
@@ -40,27 +41,27 @@ type
     x*, y*: int   ## 0-based screen cell coordinates
 
   EventKind* = enum
-    ekKey, ekMouse
+    ekKey, ekMouse, ekPaste
 
   Event* = object
     case kind*: EventKind
     of ekKey: key*: Key
     of ekMouse: mouse*: Mouse
+    of ekPaste: paste*: string   ## bracketed-paste payload
 
 proc keyEvent*(k: Key): Event = Event(kind: ekKey, key: k)
 
 proc mouseEvent*(kind: MouseKind, btn: MouseButton, x, y: int): Event =
   Event(kind: ekMouse, mouse: Mouse(kind: kind, btn: btn, x: x, y: y))
 
+proc pasteEvent*(s: string): Event = Event(kind: ekPaste, paste: s)
+
 proc isNoneEvent*(e: Event): bool =
   e.kind == ekKey and e.key.kind == kNone
 
 proc `$`*(k: Key): string =
   case k.kind
-  of kChar:
-    result = k.ch
-    if k.ctrl: result = "ctrl+" & result
-    if k.alt: result = "alt+" & result
+  of kChar: result = k.ch
   of kFn: result = "F" & $k.n
   of kNone: result = "none"
   else:
@@ -69,3 +70,6 @@ proc `$`*(k: Key): string =
       "↑", "↓", "←", "→", "home", "end", "pgup", "pgdn", "insert",
       "delete", "fn"]
     result = names[k.kind]
+  if k.shift and k.kind != kBackTab: result = "shift+" & result
+  if k.alt: result = "alt+" & result
+  if k.ctrl: result = "ctrl+" & result
