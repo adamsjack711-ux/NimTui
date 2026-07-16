@@ -15,55 +15,60 @@ proc sampleLoad(): float =
   var l: array[3, cdouble]
   if getloadavg(addr l[0], 3) >= 1: l[0].float else: 0.0
 
-proc sampleMem(): float =
-  ## Fraction of physical memory in use.
+var totalMem = 0.0   # bytes; fetched once at startup
+
+proc initTotalMem() =
   when defined(macosx):
     try:
-      let vs = execProcess("vm_stat", options = {poUsePath})
-      var pageSize = 16384.0
-      var freeish = 0.0
-      for ln in vs.splitLines:
-        if "page size of" in ln:
-          for tok in ln.splitWhitespace:
-            if tok.allCharsInSet(Digits):
-              pageSize = parseFloat(tok)
-        for pfx in ["Pages free:", "Pages inactive:", "Pages speculative:"]:
-          if ln.startsWith(pfx):
-            freeish += parseFloat(ln.split(':')[1].strip.strip(chars = {'.'}))
-      let total = parseFloat(execProcess("sysctl",
+      totalMem = parseFloat(execProcess("sysctl",
         args = ["-n", "hw.memsize"], options = {poUsePath}).strip)
-      if total > 0:
-        return clamp(1.0 - freeish * pageSize / total, 0.0, 1.0)
     except CatchableError:
       discard
-    0.0
+
+proc parseVmStat(vs: string): float =
+  ## macOS vm_stat output -> fraction of memory in use.
+  var pageSize = 16384.0
+  var freeish = 0.0
+  for ln in vs.splitLines:
+    if "page size of" in ln:
+      for tok in ln.splitWhitespace:
+        if tok.allCharsInSet(Digits):
+          pageSize = parseFloat(tok)
+    for pfx in ["Pages free:", "Pages inactive:", "Pages speculative:"]:
+      if ln.startsWith(pfx):
+        try:
+          freeish += parseFloat(ln.split(':')[1].strip.strip(chars = {'.'}))
+        except ValueError:
+          discard
+  if totalMem > 0:
+    clamp(1.0 - freeish * pageSize / totalMem, 0.0, 1.0)
   else:
-    try:
-      var total, avail = 0.0
-      for ln in readFile("/proc/meminfo").splitLines:
-        if ln.startsWith("MemTotal:"): total = parseFloat(ln.splitWhitespace[1])
-        elif ln.startsWith("MemAvailable:"): avail = parseFloat(ln.splitWhitespace[1])
-      if total > 0:
-        return clamp(1.0 - avail / total, 0.0, 1.0)
-    except CatchableError:
-      discard
     0.0
 
-proc sampleProcs(): tuple[rows, pids: seq[string]] =
+proc sampleMemLinux(): float =
+  try:
+    var total, avail = 0.0
+    for ln in readFile("/proc/meminfo").splitLines:
+      if ln.startsWith("MemTotal:"): total = parseFloat(ln.splitWhitespace[1])
+      elif ln.startsWith("MemAvailable:"): avail = parseFloat(ln.splitWhitespace[1])
+    if total > 0:
+      return clamp(1.0 - avail / total, 0.0, 1.0)
+  except CatchableError:
+    discard
+  0.0
+
+proc parsePs(outp: string): tuple[rows, pids: seq[string]] =
   type Row = tuple[cpu: float, pid, line: string]
   var rows: seq[Row]
-  try:
-    let outp = execProcess("ps",
-      args = ["axo", "pid=,pcpu=,pmem=,comm="], options = {poUsePath})
-    for ln in outp.splitLines:
-      let f = ln.splitWhitespace(maxsplit = 3)
-      if f.len < 4: continue
-      let cpu =
-        try: parseFloat(f[1])
-        except ValueError: 0.0
-      let name = f[3].rsplit('/', maxsplit = 1)[^1]
-      rows.add (cpu, f[0], &"{f[0]:>6} {f[1]:>6} {f[2]:>6}  {name}")
-  except CatchableError:
+  for ln in outp.splitLines:
+    let f = ln.splitWhitespace(maxsplit = 3)
+    if f.len < 4: continue
+    let cpu =
+      try: parseFloat(f[1])
+      except ValueError: 0.0
+    let name = f[3].rsplit('/', maxsplit = 1)[^1]
+    rows.add (cpu, f[0], &"{f[0]:>6} {f[1]:>6} {f[2]:>6}  {name}")
+  if rows.len == 0:
     return (@["(ps unavailable)"], @[""])
   rows.sort do (a, b: Row) -> int: cmp(b.cpu, a.cpu)
   for r in rows[0 .. min(59, rows.high)]:
@@ -83,6 +88,7 @@ var
   filter = inputState()
   selPid = signal("")   # keyed selection: follows the process through re-sorts
   activeTab = signal(0)
+  helpScroll = signal(0)
   clock = signal("")
   logs = signal(newSeq[string]())
 
@@ -107,7 +113,11 @@ loom dashboard — a demo of the loom TUI framework.
 
 Everything on screen is a plain Nim value inside a Signal. The view is
 rebuilt from signals on every change and diffed against the previous
-frame, so only changed cells are written to the terminal.
+frame, so only changed cells are written to the terminal. Sampling runs
+through execAsync, so a slow `ps` can never freeze the UI.
+
+This help lives in a scrollable viewport — scroll it with the wheel or
+arrow/page keys when focused.
 
 Keys:
   q          quit
@@ -116,10 +126,17 @@ Keys:
   pgup/pgdn  page through processes
   ← / →      switch tabs (when the tab bar is focused)
   type       filter the process list (when the filter is focused)
+  t          cycle themes (default → neon → mono)
+  m          toggle mouse capture (off = terminal text selection works)
+  ctrl-z     suspend; fg resumes cleanly
 
-Mouse (press m to toggle; off = terminal text selection works):
+Mouse (when capture is on):
   click      focus a widget, select a row, switch a tab, place the cursor
-  wheel      scroll the process list
+  drag       sweep the selection / cursor
+  wheel      scroll the process list or this help
+
+Wide glyphs are measured properly — 日本語 and 🚀 take two columns each
+and never tear the layout.
 
 Selection is keyed by PID, so it stays on the same process while the
 table re-sorts. The process table is live `ps` output, the load gauge is
@@ -159,17 +176,20 @@ proc view(): Widget =
               list(logs.get)
       else:
         panel(title = "help"):
-          text(helpText, wrap = true)
+          viewport(text(helpText, wrap = true), helpScroll, id = "help")
       spans([(" q ", hintKey), ("quit", hintDim), ("  ↑/↓ ", hintKey),
              ("select", hintDim), ("  tab ", hintKey), ("focus", hintDim),
-             ("  ←/→ ", hintKey), ("tabs", hintDim), ("  m ", hintKey),
-             ("mouse on/off", hintDim)])
+             ("  ←/→ ", hintKey), ("tabs", hintDim), ("  t ", hintKey),
+             ("theme", hintDim), ("  m ", hintKey), ("mouse", hintDim)])
 
 # ---- wiring ----------------------------------------------------------------
 
 proc main() =
   let app = newApp(view, mouse = true)
   var mouseOn = true
+  const themes = [themeDefault, themeNeon, themeMono]
+  var themeIdx = 0
+  initTotalMem()
 
   app.every(1000, proc () =
     let l = sampleLoad()
@@ -179,11 +199,18 @@ proc main() =
     if h.len > 300: h = h[^300 .. ^1]
     loadHist.set h)
 
+  # sampling runs off the loop — a slow subprocess can't freeze input
   app.every(2000, proc () =
-    let (rows, pids) = sampleProcs()
-    allProcs.set rows
-    allPids.set pids
-    memUsed.set sampleMem())
+    app.execAsync("ps", @["axo", "pid=,pcpu=,pmem=,comm="],
+      proc (outp: string) =
+        let (rows, pids) = parsePs(outp)
+        allProcs.set rows
+        allPids.set pids)
+    when defined(macosx):
+      app.execAsync("vm_stat", @[], proc (outp: string) =
+        memUsed.set parseVmStat(outp))
+    else:
+      memUsed.set sampleMemLinux())
 
   app.every(1000, proc () =
     clock.set now().format("ddd d MMM HH:mm:ss"))
@@ -197,6 +224,11 @@ proc main() =
       app.setMouse(mouseOn)
       pushLog(if mouseOn: "mouse capture on"
               else: "mouse capture off — text selection works")
+      true
+    elif k.isChar("t"):
+      themeIdx = (themeIdx + 1) mod themes.len
+      setTheme(themes[themeIdx])
+      pushLog "theme: " & themes[themeIdx].name
       true
     else:
       false)

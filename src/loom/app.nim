@@ -1,8 +1,8 @@
 ## The application runtime: owns the terminal, rebuilds the view when any
 ## signal it depends on changes, dispatches input, and runs timers.
 
-import std/[monotimes, options, times]
-from std/posix import kill, getpid, SIGTSTP
+import std/[monotimes, options, osproc, times]
+from std/posix import kill, getpid, SIGTSTP, read, fcntl, F_SETFL, O_NONBLOCK
 import geometry, buffer, term, widget, reactive, events
 
 type
@@ -10,6 +10,12 @@ type
     interval: Duration
     next: MonoTime
     cb: proc ()
+
+  AsyncJob = object
+    p: Process
+    fd: cint
+    buf: string
+    cb: proc (output: string)
 
   App* = ref object
     viewFn: proc (): Widget
@@ -24,6 +30,7 @@ type
     focusedId: string   ## id of the focused widget, for keyed restore
     focusables: seq[Widget]
     lastHits: seq[HitRegion]
+    jobs: seq[AsyncJob]
     term: Terminal
     root: Widget
 
@@ -62,6 +69,43 @@ proc setMouse*(app: App, on: bool) =
   ## Toggle mouse capture at runtime.
   app.mouseOn = on
   app.term.setMouse(on)
+
+proc execAsync*(app: App, cmd: string, args: seq[string],
+                done: proc (output: string)) =
+  ## Run a command without blocking the UI. Output (stdout+stderr) is
+  ## collected as it arrives; `done` runs on the UI loop when the process
+  ## exits, so it can set signals directly. Long subprocess work in a
+  ## timer callback should go through this instead of execProcess.
+  let p = startProcess(cmd, args = args,
+                       options = {poUsePath, poStdErrToStdOut})
+  let fd = p.outputHandle.cint
+  discard fcntl(fd, F_SETFL, O_NONBLOCK)
+  app.jobs.add AsyncJob(p: p, fd: fd, cb: done)
+
+proc pollJobs*(app: App) =
+  ## Advance async jobs (non-blocking). The run loop calls this every
+  ## iteration; exposed for tests and custom loops.
+  var i = 0
+  while i < app.jobs.len:
+    var finished = false
+    var tmp: array[4096, char]
+    while true:
+      let n = read(app.jobs[i].fd, addr tmp[0], tmp.len)
+      if n > 0:
+        for j in 0 ..< n:
+          app.jobs[i].buf.add tmp[j]
+      elif n == 0:
+        finished = true
+        break
+      else:
+        break   # EAGAIN: nothing more right now
+    if finished:
+      let job = app.jobs[i]
+      app.jobs.delete(i)
+      job.p.close()
+      job.cb(job.buf)
+    else:
+      inc i
 
 proc rememberFocus(app: App) =
   let w = app.focused
@@ -206,9 +250,17 @@ proc run*(app: App) =
         app.quit()
       if not app.running: break
       app.runTimers()
+      app.pollJobs()
       if app.term.checkResize():
         app.dirty = true
       if app.dirty:
         app.rebuild()
   finally:
+    for job in app.jobs.mitems:
+      try:
+        job.p.terminate()
+        job.p.close()
+      except CatchableError:
+        discard
+    app.jobs = @[]
     app.term.restore()

@@ -30,7 +30,7 @@ proc isChar*(k: Key, c: string): bool =
 
 type
   MouseKind* = enum
-    mPress, mRelease, mWheelUp, mWheelDown
+    mPress, mRelease, mDrag, mWheelUp, mWheelDown
 
   MouseButton* = enum
     mbNone, mbLeft, mbMiddle, mbRight

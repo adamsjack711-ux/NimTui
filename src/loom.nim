@@ -4,13 +4,15 @@
 ## via signals, a flex layout engine, and diffed ANSI rendering. Compiles
 ## to a single zero-dependency binary.
 
-import loom/[geometry, style, buffer, events, reactive, widget, widgets, dsl, app, term]
-export geometry, style, buffer, events, reactive, widget, widgets, dsl, app
+import loom/[geometry, style, buffer, events, reactive, widget, widgets, dsl,
+             app, term, theme]
+export geometry, style, buffer, events, reactive, widget, widgets, dsl, app,
+       theme
 # Terminal lifecycle (setup/restore/draw/checkResize) is the App's job;
 # only the input/automation surface is public.
 export term except setup, restore, draw, checkResize, setMouse
 
-const loomVersion* = "0.1.0"
+const loomVersion* = "0.2.0"
 
 proc renderToString*(w: Widget, width, height: int): string =
   ## Render a widget tree headlessly to plain text — snapshots for tests,

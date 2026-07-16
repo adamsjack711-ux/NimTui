@@ -1,18 +1,22 @@
 ## Built-in leaf widgets: text, rule, gauge, sparkline, list, table,
-## input, tabs.
+## input, tabs, spans, viewport. All measurement is display-width aware
+## (CJK/emoji take two columns) and styling falls back to the active
+## theme when no explicit style is given.
 
 import std/[sequtils, strutils, unicode]
-import geometry, style, buffer, events, reactive, widget
+import geometry, style, buffer, events, reactive, widget, theme
 
 proc runesToStr(rs: seq[Rune]): string =
   for r in rs: result.add r.toUTF8
 
-proc clipRunes(s: string, w: int): string =
-  var n = 0
+proc clipWidth(s: string, w: int): string =
+  ## Clip to at most `w` display columns without splitting a wide glyph.
+  var used = 0
   for r in s.runes:
-    if n >= w: break
+    let rw = runeWidth(r)
+    if used + rw > w: break
     result.add r.toUTF8
-    inc n
+    used += rw
 
 # ---- Text ------------------------------------------------------------------
 
@@ -27,12 +31,12 @@ type
     wrap*: bool
 
 proc wrapLine(line: string, width: int): seq[string] =
-  if width <= 0 or line.runeLen <= width:
+  if width <= 0 or line.strWidth <= width:
     return @[line]
   var cur = ""
   var curLen = 0
   for word in line.split(' '):
-    let wl = word.runeLen
+    let wl = word.strWidth
     if curLen == 0:
       cur = word
       curLen = wl
@@ -58,14 +62,14 @@ method minSize*(t: Text, avail: Size): Size =
   let ls = t.textLines(avail.w)
   var w = 0
   for l in ls:
-    w = max(w, l.runeLen)
+    w = max(w, l.strWidth)
   size(min(w, max(avail.w, 0)), ls.len)
 
 method render*(t: Text, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   let ls = t.textLines(area.w)
   for i, line in ls:
     if i >= area.h: break
-    let len = line.runeLen
+    let len = line.strWidth
     let x = case t.align
       of alLeft: area.x
       of alCenter: area.x + max(0, (area.w - len) div 2)
@@ -86,10 +90,11 @@ method minSize*(r: Rule, avail: Size): Size = size(0, 1)
 
 method render*(r: Rule, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   if area.h < 1: return
+  let st = if r.style == Style(): theme().dim else: r.style
   for x in area.x ..< area.right:
-    buf.put(x, area.y, "─", r.style)
+    buf.put(x, area.y, "─", st)
 
-proc rule*(style = Style(fg: clBrightBlack)): Rule =
+proc rule*(style = Style()): Rule =
   Rule(style: style, widthSpec: flex(1), heightSpec: fixed(1))
 
 # ---- Gauge -----------------------------------------------------------------
@@ -97,13 +102,13 @@ proc rule*(style = Style(fg: clBrightBlack)): Rule =
 type Gauge* = ref object of Widget
   value*: float          ## 0.0 .. 1.0
   label*: string
-  color*: Color          ## default color = auto green/yellow/red
+  color*: Color          ## default color = theme low/mid/high by value
   showPct*: bool
 
 const gaugeEighths = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"]
 
 method minSize*(g: Gauge, avail: Size): Size =
-  size(g.label.runeLen + 10, 1)
+  size(g.label.strWidth + 10, 1)
 
 method render*(g: Gauge, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   if area.h < 1 or area.w < 2: return
@@ -114,13 +119,13 @@ method render*(g: Gauge, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   var pct = ""
   if g.showPct:
     pct = " " & align($int(v * 100 + 0.5) & "%", 4)
-  let barW = area.right - x - pct.runeLen
+  let barW = area.right - x - pct.len
   if barW < 1: return
   let col =
     if g.color != defaultColor: g.color
-    elif v < 0.6: clGreen
-    elif v < 0.85: clYellow
-    else: clRed
+    elif v < 0.6: theme().gaugeLow
+    elif v < 0.85: theme().gaugeMid
+    else: theme().gaugeHigh
   let st = Style(fg: col)
   let filled8 = int(v * barW.float * 8 + 0.5)
   let full = min(filled8 div 8, barW)
@@ -133,7 +138,7 @@ method render*(g: Gauge, buf: var Buffer, area: Rect, ctx: RenderCtx) =
     else:
       buf.put(x + i, area.y, " ", st)
   if pct.len > 0:
-    discard buf.write(x + barW, area.y, pct, Style(), pct.runeLen)
+    discard buf.write(x + barW, area.y, pct, Style(), pct.len)
 
 proc gauge*(value: float; label = ""; color = defaultColor; showPct = true;
             width = flex(1); height = fixed(1)): Gauge =
@@ -144,8 +149,8 @@ proc gauge*(value: float; label = ""; color = defaultColor; showPct = true;
 
 type Sparkline* = ref object of Widget
   data*: seq[float]
-  color*: Color
-  zeroBase*: bool   ## scale from 0 instead of min(data)
+  color*: Color   ## default color = theme accent
+  zeroBase*: bool ## scale from 0 instead of min(data)
 
 const sparkTicks = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
 
@@ -158,18 +163,17 @@ method render*(s: Sparkline, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   var lo = if s.zeroBase: 0.0 else: min(points)
   var hi = max(points)
   if hi <= lo: hi = lo + 1.0
-  let st = Style(fg: s.color)
+  let st = Style(fg: if s.color == defaultColor: theme().accent else: s.color)
   let xoff = area.w - points.len   # right-align
   let levelMax = area.h * 8
   for i, v in points:
     let lvl = int((v - lo) / (hi - lo) * levelMax.float + 0.5)
     for row in 0 ..< area.h:
-      # row 0 is the top; count eighths from the bottom row upward
       let fromBottom = area.h - 1 - row
       let cellLvl = clamp(lvl - fromBottom * 8, 0, 8)
       buf.put(area.x + xoff + i, area.y + row, sparkTicks[cellLvl], st)
 
-proc sparkline*(data: seq[float]; color = clCyan; zeroBase = true;
+proc sparkline*(data: seq[float]; color = defaultColor; zeroBase = true;
                 width = flex(1); height = fixed(1)): Sparkline =
   Sparkline(data: data, color: color, zeroBase: zeroBase,
             widthSpec: width, heightSpec: height)
@@ -211,7 +215,7 @@ proc setIndex(l: List, i: int) =
 method minSize*(l: List, avail: Size): Size =
   var w = 0
   for it in l.items:
-    w = max(w, it.runeLen + 2)
+    w = max(w, it.strWidth + 2)
   size(min(w, max(avail.w, 0)), l.items.len)
 
 method render*(l: List, buf: var Buffer, area: Rect, ctx: RenderCtx) =
@@ -231,15 +235,15 @@ method render*(l: List, buf: var Buffer, area: Rect, ctx: RenderCtx) =
     var st = l.style
     var prefix = ""
     if isSel:
-      st.attrs.incl aReverse
-      if ctx.focused != l: st.attrs.incl aDim
+      st = mergeStyle(st, if ctx.focused == l: theme().selection
+                          else: theme().selectionUnfocused)
       prefix = "▸ "
     elif l.interactive:
       prefix = "  "
     var line = prefix & l.items[idx]
-    line = clipRunes(line, area.w)
+    line = clipWidth(line, area.w)
     if isSel:
-      line = line & spaces(max(0, area.w - line.runeLen))
+      line = line & spaces(max(0, area.w - line.strWidth))
     discard buf.write(area.x, area.y + row, line, st, area.w)
 
 method handleKey*(l: List, k: Key): bool =
@@ -260,7 +264,7 @@ method handleKey*(l: List, k: Key): bool =
 method handleMouse*(l: List, m: Mouse, area: Rect): bool =
   if not l.interactive or l.items.len == 0: return false
   case m.kind
-  of mPress:
+  of mPress, mDrag:
     if m.btn != mbLeft: return false
     let idx = l.lastOff + (m.y - area.y)
     if idx < 0 or idx >= l.items.len: return false
@@ -301,11 +305,11 @@ type Table* = ref object of Widget
 proc colWidths(t: Table, avail: int): seq[int] =
   result = newSeq[int](t.headers.len)
   for i, h in t.headers:
-    result[i] = h.runeLen
+    result[i] = h.strWidth
   for row in t.rows:
     for i, cell in row:
       if i < result.len:
-        result[i] = max(result[i], cell.runeLen)
+        result[i] = max(result[i], cell.strWidth)
 
 method minSize*(t: Table, avail: Size): Size =
   let ws = t.colWidths(avail.w)
@@ -321,7 +325,7 @@ method render*(t: Table, buf: var Buffer, area: Rect, ctx: RenderCtx) =
     for i, w in ws:
       if x >= area.right: break
       let cell = if i < cells.len: cells[i] else: ""
-      discard buf.write(x, y, clipRunes(cell, w), st, area.right - x)
+      discard buf.write(x, y, clipWidth(cell, w), st, area.right - x)
       x += w + 2
   drawRow(area.y, t.headers, t.headerStyle)
   for r, row in t.rows:
@@ -346,32 +350,43 @@ type
     state*: InputState
     placeholder*: string
     style*: Style
-    lastOff: int   ## horizontal scroll offset from the last render
+    lastOff: int      ## first visible rune index from the last render
+    lastOffCol: int   ## display column of that rune
 
 proc inputState*(initial = ""): InputState =
   InputState(text: signal(initial), cursor: signal(initial.runeLen))
 
 method minSize*(i: Input, avail: Size): Size =
-  size(max(i.state.text.peek.runeLen + 1, i.placeholder.runeLen), 1)
+  size(max(i.state.text.peek.strWidth + 1, i.placeholder.strWidth), 1)
 
 method render*(inp: Input, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   if area.isEmpty: return
   let focused = ctx.focused == inp
   let runes = inp.state.text.get.toRunes
   let cur = clamp(inp.state.cursor.get, 0, runes.len)
-  let off = max(0, cur - area.w + 1)
+  var cursorCol = 0
+  for i in 0 ..< cur:
+    cursorCol += runeWidth(runes[i])
+  # scroll (in runes) so the cursor column is visible
+  var off = 0
+  var offCol = 0
+  while off < runes.len and cursorCol - offCol >= area.w:
+    offCol += runeWidth(runes[off])
+    inc off
   inp.lastOff = off
+  inp.lastOffCol = offCol
   if runes.len == 0 and inp.placeholder.len > 0:
     discard buf.write(area.x, area.y, inp.placeholder,
-                      Style(fg: clBrightBlack, attrs: {aItalic}), area.w)
+                      theme().placeholder, area.w)
   else:
-    let visible = runes[min(off, runes.len) .. ^1]
-    discard buf.write(area.x, area.y, runesToStr(visible), inp.style, area.w)
+    discard buf.write(area.x, area.y, runesToStr(runes[min(off, runes.len) .. ^1]),
+                      inp.style, area.w)
   if focused:
-    let cx = area.x + cur - off
-    var cell = buf[cx, area.y]
-    cell.style.attrs.incl aReverse
-    buf[cx, area.y] = cell
+    let cx = area.x + (cursorCol - offCol)
+    if cx < area.right:
+      var cell = buf[cx, area.y]
+      cell.style.attrs.incl aReverse
+      buf[cx, area.y] = cell
 
 proc edit(inp: Input, runes: seq[Rune], cur: int) =
   inp.state.cursor.set clamp(cur, 0, runes.len)
@@ -402,9 +417,15 @@ method handleKey*(inp: Input, k: Key): bool =
   true
 
 method handleMouse*(inp: Input, m: Mouse, area: Rect): bool =
-  if m.kind != mPress or m.btn != mbLeft: return false
+  if m.kind notin {mPress, mDrag} or m.btn != mbLeft: return false
   let runes = inp.state.text.peek.toRunes
-  inp.state.cursor.set clamp(inp.lastOff + (m.x - area.x), 0, runes.len)
+  let targetCol = inp.lastOffCol + (m.x - area.x)
+  var col = 0
+  var idx = 0
+  while idx < runes.len and col < targetCol:
+    col += runeWidth(runes[idx])
+    inc idx
+  inp.state.cursor.set clamp(idx, 0, runes.len)
   true
 
 method handlePaste*(inp: Input, s: string): bool =
@@ -433,7 +454,7 @@ type Tabs* = ref object of Widget
 
 method minSize*(t: Tabs, avail: Size): Size =
   var w = 0
-  for l in t.labels: w += l.runeLen + 3
+  for l in t.labels: w += l.strWidth + 3
   size(w, 1)
 
 method render*(t: Tabs, buf: var Buffer, area: Rect, ctx: RenderCtx) =
@@ -442,12 +463,12 @@ method render*(t: Tabs, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   let focused = ctx.focused == t
   var x = area.x
   for i, label in t.labels:
-    var st = t.style
+    var st: Style
     if i == active:
-      st.attrs.incl aReverse
-      if not focused: st.attrs.incl aDim
+      st = mergeStyle(t.style, if focused: theme().selection
+                               else: theme().selectionUnfocused)
     else:
-      st.attrs.incl aDim
+      st = mergeStyle(t.style, theme().tabInactive)
     x += buf.write(x, area.y, " " & label & " ", st, area.right - x)
     x += buf.write(x, area.y, " ", Style(), area.right - x)
 
@@ -464,11 +485,11 @@ method handleMouse*(t: Tabs, m: Mouse, area: Rect): bool =
   if m.kind != mPress or m.btn != mbLeft: return false
   var x = 0
   for i, label in t.labels:
-    let w = label.runeLen + 2   # " label " segment
+    let w = label.strWidth + 2   # " label " segment
     if m.x - area.x < x + w:
       t.active.set i
       return true
-    x += w + 1                  # separator space
+    x += w + 1                   # separator space
   false
 
 proc tabs*(labels: seq[string]; active: Signal[int]; style = Style();
@@ -477,7 +498,7 @@ proc tabs*(labels: seq[string]; active: Signal[int]; style = Style();
        widthSpec: width, heightSpec: height, focusable: true,
        autofocus: autofocus, id: id)
 
-# ---- Spans (rich single-line text) ------------------------------------------
+# ---- Spans (rich text) -------------------------------------------------------
 
 type
   Span* = tuple[text: string, style: Style]
@@ -485,26 +506,140 @@ type
   SpanLine* = ref object of Widget
     parts*: seq[Span]
     align*: Align
+    wrap*: bool
+
+proc flowSpans(parts: seq[Span], width: int): seq[seq[Span]] =
+  ## Greedy word-wrap across styled fragments. '\n' forces a break.
+  var line: seq[Span]
+  var lineW = 0
+  template flush() =
+    result.add line
+    line = @[]
+    lineW = 0
+  for part in parts:
+    let subs = part.text.split('\n')
+    for li, sub in subs:
+      if li > 0: flush()
+      for word in sub.split(' '):
+        if word.len == 0: continue
+        let wl = word.strWidth
+        if lineW == 0:
+          line.add (word, part.style)
+          lineW = wl
+        elif width <= 0 or lineW + 1 + wl <= width:
+          # join with a space; merge into the previous fragment when the
+          # style matches to keep the seq small
+          if line.len > 0 and line[^1].style == part.style:
+            line[^1].text.add " " & word
+          else:
+            line[^1].text.add " "
+            line.add (word, part.style)
+          lineW += 1 + wl
+        else:
+          flush()
+          line.add (word, part.style)
+          lineW = wl
+  if line.len > 0 or result.len == 0:
+    result.add line
+
+proc lineWidth(line: seq[Span]): int =
+  for p in line: result += p.text.strWidth
 
 method minSize*(s: SpanLine, avail: Size): Size =
-  var w = 0
-  for p in s.parts: w += p.text.runeLen
-  size(min(w, max(avail.w, 0)), 1)
+  if s.wrap:
+    let lines = flowSpans(s.parts, avail.w)
+    var w = 0
+    for l in lines: w = max(w, l.lineWidth)
+    size(min(w, max(avail.w, 0)), lines.len)
+  else:
+    var w = 0
+    for p in s.parts: w += p.text.strWidth
+    size(min(w, max(avail.w, 0)), 1)
 
 method render*(s: SpanLine, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   if area.isEmpty: return
-  var total = 0
-  for p in s.parts: total += p.text.runeLen
-  var x = case s.align
-    of alLeft: area.x
-    of alCenter: area.x + max(0, (area.w - total) div 2)
-    of alRight: area.x + max(0, area.w - total)
-  for p in s.parts:
-    if x >= area.right: break
-    x += buf.write(x, area.y, p.text, p.style, area.right - x)
+  let lines = if s.wrap: flowSpans(s.parts, area.w) else: @[s.parts]
+  for row, line in lines:
+    if row >= area.h: break
+    let total = line.lineWidth
+    var x = case s.align
+      of alLeft: area.x
+      of alCenter: area.x + max(0, (area.w - total) div 2)
+      of alRight: area.x + max(0, area.w - total)
+    for p in line:
+      if x >= area.right: break
+      x += buf.write(x, area.y + row, p.text, p.style, area.right - x)
 
-proc spans*(parts: openArray[Span]; align = alLeft;
-            width = flex(1); height = fixed(1)): SpanLine =
-  ## One line of differently-styled fragments, e.g.
+proc spans*(parts: openArray[Span]; align = alLeft; wrap = false;
+            width = fit(); height = fit()): SpanLine =
+  ## Mixed-style text, e.g.
   ## `spans([("ok", style(fg = clGreen)), (" 34 checks", Style())])`.
-  SpanLine(parts: @parts, align: align, widthSpec: width, heightSpec: height)
+  ## With `wrap = true` fragments flow across as many lines as needed.
+  SpanLine(parts: @parts, align: align, wrap: wrap,
+           widthSpec: width, heightSpec: height)
+
+# ---- Viewport (scrollable content) -------------------------------------------
+
+type Viewport* = ref object of Widget
+  content*: Widget       ## rendered at natural height, then windowed.
+                         ## Display-only: widgets inside don't get focus.
+  scroll*: Signal[int]   ## top row offset
+  lastH: int
+  lastContentH: int
+
+const maxViewportContent = 10_000   # rows; runaway-content guard
+
+proc maxScroll(v: Viewport): int =
+  max(0, v.lastContentH - v.lastH)
+
+method minSize*(v: Viewport, avail: Size): Size = size(0, 1)
+
+method render*(v: Viewport, buf: var Buffer, area: Rect, ctx: RenderCtx) =
+  if area.isEmpty or v.content == nil: return
+  let contentH = clamp(v.content.minSize(size(area.w, maxViewportContent)).h,
+                       0, maxViewportContent)
+  v.lastH = area.h
+  v.lastContentH = contentH
+  let sc = clamp(v.scroll.get, 0, v.maxScroll)
+  var off = newBuffer(area.w, contentH)
+  # fresh context: inner hit regions would carry offscreen coordinates
+  v.content.render(off, rect(0, 0, area.w, contentH), RenderCtx())
+  for row in 0 ..< min(area.h, contentH - sc):
+    for x in 0 ..< area.w:
+      buf[area.x + x, area.y + row] = off[x, sc + row]
+  if contentH > area.h and area.w > 0:
+    let barX = area.right - 1
+    let thumbH = max(1, area.h * area.h div contentH)
+    let thumbY = if v.maxScroll == 0: 0
+                 else: (area.h - thumbH) * sc div v.maxScroll
+    for row in 0 ..< area.h:
+      let ch = if row >= thumbY and row < thumbY + thumbH: "┃" else: "│"
+      buf.put(barX, area.y + row, ch, theme().dim)
+
+method handleKey*(v: Viewport, k: Key): bool =
+  let page = max(1, v.lastH)
+  var sc = clamp(v.scroll.peek, 0, v.maxScroll)
+  case k.kind
+  of kUp: sc = max(0, sc - 1)
+  of kDown: sc = min(v.maxScroll, sc + 1)
+  of kPageUp: sc = max(0, sc - page)
+  of kPageDown: sc = min(v.maxScroll, sc + page)
+  of kHome: sc = 0
+  of kEnd: sc = v.maxScroll
+  else: return false
+  v.scroll.set sc
+  true
+
+method handleMouse*(v: Viewport, m: Mouse, area: Rect): bool =
+  case m.kind
+  of mWheelUp: v.scroll.set max(0, clamp(v.scroll.peek, 0, v.maxScroll) - 3)
+  of mWheelDown: v.scroll.set min(v.maxScroll, clamp(v.scroll.peek, 0, v.maxScroll) + 3)
+  else: return false
+  true
+
+proc viewport*(content: Widget; scroll: Signal[int]; focusable = true;
+               id = ""; width = flex(1); height = flex(1)): Viewport =
+  ## Scrollable window over content taller than the screen. Arrow/page
+  ## keys and the wheel scroll it; a scrollbar appears when needed.
+  Viewport(content: content, scroll: scroll, focusable: focusable,
+           id: id, widthSpec: width, heightSpec: height)

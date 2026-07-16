@@ -37,7 +37,7 @@ proc emergencyRestore() {.noconv.} =
   ## Exit-time safety net: undo raw mode and screen modes if the process
   ## quits without going through Terminal.restore.
   if rawOn:
-    stdout.write "\e[?2004l\e[?1006l\e[?1000l\e[0m\e[?25h\e[?1049l"
+    stdout.write "\e[?2004l\e[?1006l\e[?1002l\e[?1000l\e[0m\e[?25h\e[?1049l"
     stdout.flushFile()
     discard tcSetAttr(0, TCSAFLUSH, addr origTios)
     rawOn = false
@@ -83,7 +83,7 @@ proc setup*(t: var Terminal) =
 
 proc restore*(t: var Terminal) =
   if not t.active: return
-  stdout.write "\e[?2004l\e[?1006l\e[?1000l\e[0m\e[?25h\e[?1049l"
+  stdout.write "\e[?2004l\e[?1006l\e[?1002l\e[?1000l\e[0m\e[?25h\e[?1049l"
   stdout.flushFile()
   if rawOn:
     discard tcSetAttr(0, TCSAFLUSH, addr origTios)
@@ -91,10 +91,12 @@ proc restore*(t: var Terminal) =
   t.active = false
 
 proc setMouse*(t: var Terminal, on: bool) =
-  ## Toggle SGR mouse reporting. Off by default: capturing the mouse
-  ## disables the terminal's own text selection/copy.
+  ## Toggle SGR mouse reporting (clicks, wheel, drag-while-pressed).
+  ## Off by default: capturing the mouse disables the terminal's own
+  ## text selection/copy.
   if not t.active: return
-  stdout.write(if on: "\e[?1000h\e[?1006h" else: "\e[?1006l\e[?1000l")
+  stdout.write(if on: "\e[?1000h\e[?1002h\e[?1006h"
+               else: "\e[?1006l\e[?1002l\e[?1000l")
   stdout.flushFile()
 
 proc draw*(t: var Terminal, next: Buffer) =
@@ -202,7 +204,11 @@ proc parseCsi(): Event =
       of 1: mbMiddle
       of 2: mbRight
       else: mbNone
-    return mouseEvent(if final == 'M': mPress else: mRelease, btn, x, y)
+    let kind =
+      if (b and 32) != 0: mDrag                # motion with button held
+      elif final == 'M': mPress
+      else: mRelease
+    return mouseEvent(kind, btn, x, y)
   let parts = params.split(';')
   var k: Key
   case final

@@ -1,7 +1,7 @@
 ## Widget base type, size specs, and the flex container (`Box`) that
 ## implements the layout engine.
 
-import geometry, style, buffer, events
+import geometry, style, buffer, events, theme
 
 type
   SizeSpecKind* = enum
@@ -157,13 +157,15 @@ proc layout*(b: Box, inner: Rect): seq[Rect] =
 
 method render*(b: Box, buf: var Buffer, area: Rect, ctx: RenderCtx) =
   if area.isEmpty: return
-  if b.style != Style():
+  let themed = b.style == Style()
+  if not themed:
     fillRect(buf, area, " ", b.style)
   if b.border != bkNone:
-    drawBorder(buf, area, b.border, b.style)
+    drawBorder(buf, area, b.border, if themed: theme().border else: b.style)
     if b.title.len > 0 and area.w > 4:
       discard buf.write(area.x + 2, area.y, " " & b.title & " ",
-                        b.titleStyle, area.w - 4)
+                        (if themed: theme().title else: b.titleStyle),
+                        area.w - 4)
   let inr = b.innerRect(area)
   if inr.isEmpty: return
   let rects = b.layout(inr)

@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.1.0"
+version       = "0.2.0"
 author        = "Jack Adams-Lovell"
 description   = "Reactive terminal UI framework for Nim — declarative macro DSL, flex layout, zero dependencies"
 license       = "MIT"
@@ -12,7 +12,7 @@ requires "nim >= 2.0.0"
 
 task test, "Run the test suite":
   for f in ["test_buffer", "test_reactive", "test_layout", "test_dsl",
-            "test_events", "test_app"]:
+            "test_events", "test_app", "test_width", "test_features"]:
     exec "nim c -r --hints:off tests/" & f & ".nim"
 
 task demo, "Build the dashboard demo (release, size-optimized)":

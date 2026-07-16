@@ -47,16 +47,22 @@ Signal ──changes──▶ App marks dirty ──▶ view() rebuilds widget t
   Reading a signal inside the render pass subscribes it; writing one marks
   the app dirty. Dependencies re-track on every run, so conditional reads
   (`if cond.get: a.get else: b.get`) subscribe exactly what they use.
+- **`theme.nim`** — named style sets (default / neon / mono built in)
+  that widgets fall back to when no explicit style is given. The active
+  theme is itself a signal: `setTheme(themeNeon)` restyles the whole app
+  in one repaint.
 - **`widget.nim`** — the flex layout engine. Each widget has a `SizeSpec`
   per axis: `fixed(n)` cells, `flex(weight)` share of the remainder, or
   `fit()` measured from content.
-- **`buffer.nim`** — a cell grid double buffer. Consecutive frames are
-  diffed and only changed cells are written, with minimal cursor moves and
-  SGR changes.
+- **`buffer.nim`** — a cell grid double buffer with compact cells (one
+  `Rune` + style, no per-cell heap allocation). Wide glyphs (CJK, emoji)
+  take two columns and are handled through measurement, clipping, cursor
+  math, and diffing. Consecutive frames are diffed and only changed cells
+  are written, with minimal cursor moves and SGR changes.
 - **`term.nim`** — raw mode, alternate screen, SIGWINCH resize handling,
   and an escape-sequence parser for keys (arrows with ctrl/shift/alt
   modifiers, function keys, chords, UTF-8), SGR mouse events (click,
-  wheel), and bracketed paste. The terminal is always restored: normal
+  drag, wheel), and bracketed paste. The terminal is always restored: normal
   quit, exceptions, SIGTERM/SIGHUP, and unexpected exits (exit proc);
   ctrl-z suspends and resumes cleanly. POSIX only; no ncurses, no
   external packages. `feedInput` injects bytes for tests and programmatic
@@ -72,7 +78,10 @@ Signal ──changes──▶ App marks dirty ──▶ view() rebuilds widget t
   the same widget when rebuilds change the tree shape. Mouse capture is
   **opt-in** (`newApp(view, mouse = true)`, toggleable with `setMouse`)
   because capturing clicks disables the terminal's own text selection.
-  `renderFrame`/`processEvent` expose the loop for headless tests.
+  `app.execAsync(cmd, args, done)` runs subprocesses off the loop — the
+  callback fires on the UI thread when the process exits, so a slow `ps`
+  never freezes input. `renderFrame`/`processEvent` expose the loop for
+  headless tests.
 
 State lives in signals you own; the view is a pure function of them,
 rebuilt per dirty frame and diffed at the cell level (an Elm-style loop
@@ -87,7 +96,8 @@ without the boilerplate).
 | `gauge` | smooth eighth-block bar, auto green/yellow/red |
 | `sparkline` | multi-row block-tick chart, auto-scaled |
 | `list` | selectable + scrollable; keyed selection (`selectedKey` + `keys`) survives re-sorted data; tails output when non-interactive |
-| `spans` | one line of mixed-style fragments (rich text) |
+| `spans` | mixed-style rich text; `wrap = true` flows fragments across lines |
+| `viewport` | scrollable window over tall content, with scrollbar |
 | `table` | auto-sized columns |
 | `input` | single-line editor with cursor, rune-aware |
 | `tabs` | arrow-key switchable tab bar |
@@ -120,13 +130,15 @@ nimble test
 
 ## Status / roadmap
 
-v0.1 — core is functional and tested. Not yet done:
+v0.2 — functional, themed, width-aware, and tested (100+ headless tests).
+Deliberately out of scope for now:
 
-- wide-glyph (CJK/emoji) cell widths
-- scrollable free-form viewport widget; multi-line / wrapped rich text
-- mouse drag / motion events (click + wheel are supported)
-- style themes; Windows (via VT sequences) support
-- async task offload (long work in a timer callback blocks input)
+- Windows (VT sequences would work; the input/termios layer is POSIX)
+- grapheme clusters (ZWJ emoji sequences, combining marks render as
+  their component runes)
+- hover/motion mouse events without a button held (drag is supported)
+- interactive widgets *inside* a viewport (viewport content is
+  display-only)
 
 ## License
 
