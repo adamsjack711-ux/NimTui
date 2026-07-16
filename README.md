@@ -105,24 +105,37 @@ without the boilerplate).
 
 All constructors are plain procs — the DSL is optional sugar.
 
-## Demo
+## Examples
 
-A live system dashboard (`ps` process table with reactive filtering, load
-gauge + history sparkline, memory, log panel, tabs, themes). Try it
-without installing Nim:
+**Dashboard** — a live system dashboard (`ps` process table with
+reactive filtering, load gauge + history sparkline, memory, log panel,
+tabs, themes). Try it without installing Nim:
 
 ```sh
 npx nimtui         # prebuilt binary via npm (macOS arm64)
 ```
 
-or build it from this repo:
+**Journal** — a notes app stressing the layout system: a file-tree
+sidebar (keyed selection that survives folding) beside a markdown-ish
+preview rendered as styled `spans` inside a scrollable `viewport`, a
+raw-source tab, and a quick-capture input.
+
+**Chess** — a hot-seat chess game whose board is one custom widget
+(`render` + `handleKey` + `handleMouse` methods) riding the framework's
+focus, hit-testing and dirty-repaint machinery. Full legal moves
+(castling, en passant, promotion, mate/stalemate detection), click-click
+or drag-and-drop with hover highlights, keyboard cursor, undo, board
+flip.
+
+Build them from this repo:
 
 ```sh
-nimble demo        # or: nim c -d:release examples/dashboard.nim
-./bin/dashboard
+nimble demo        # dashboard -> ./bin/dashboard
+nimble journal     # journal   -> ./bin/journal
+nimble chess       # chess     -> ./bin/chess
 ```
 
-The release binary is ~300 KB and links only libSystem/libc.
+The release binaries are ~300 KB and link only libSystem/libc.
 
 ## Testing
 

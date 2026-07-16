@@ -18,3 +18,11 @@ task test, "Run the test suite":
 task demo, "Build the dashboard demo (release, size-optimized)":
   exec "nim c -d:release --opt:size --hints:off examples/dashboard.nim"
   echo "binary at bin/dashboard"
+
+task journal, "Build the journal example (release, size-optimized)":
+  exec "nim c -d:release --opt:size --hints:off examples/journal.nim"
+  echo "binary at bin/journal"
+
+task chess, "Build the chess example (release, size-optimized)":
+  exec "nim c -d:release --opt:size --hints:off examples/chess.nim"
+  echo "binary at bin/chess"

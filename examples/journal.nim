@@ -299,35 +299,64 @@ proc numberedPrefix(ln: string): int =
 proc mdView(content: string): Widget =
   let box = vbox()
   var inCode = false
+  var para: seq[Span]      # consecutive prose lines flow as one paragraph
+  var paraQuote = false
+
+  proc flushPara() =
+    if para.len > 0:
+      if paraQuote:
+        box.add spans(prefixed("┃ ", quoteStyle, para), wrap = true)
+      else:
+        box.add spans(para, wrap = true)
+      para = @[]
+
   for ln in content.splitLines:
     if ln.startsWith("```"):
+      flushPara()
       inCode = not inCode
       box.add text(ln, style = Style(fg: clBrightBlack))
     elif inCode:
       box.add text("  " & ln, style = codeStyle)
     elif ln.startsWith("# "):
+      flushPara()
       box.add text(ln[2 .. ^1], style = h1Style)
     elif ln.startsWith("## "):
+      flushPara()
       box.add text(ln[3 .. ^1], style = h2Style)
     elif ln.startsWith("### "):
+      flushPara()
       box.add text(ln[4 .. ^1], style = h3Style)
     elif ln.startsWith("> "):
-      box.add spans(prefixed("┃ ", quoteStyle,
-                             inlineSpans(ln[2 .. ^1], quoteStyle)), wrap = true)
+      if para.len > 0 and not paraQuote:
+        flushPara()
+      paraQuote = true
+      if para.len > 0:
+        para.add (text: " ", style: quoteStyle)
+      para.add inlineSpans(ln[2 .. ^1], quoteStyle)
     elif ln.startsWith("- ") or ln.startsWith("* "):
+      flushPara()
       box.add spans(prefixed("  • ", bulletStyle,
                              inlineSpans(ln[2 .. ^1])), wrap = true)
     elif ln.strip == "---":
+      flushPara()
       box.add rule()
     elif ln.len == 0:
+      flushPara()
       box.add text("")
     else:
       let np = numberedPrefix(ln)
       if np > 0:
+        flushPara()
         box.add spans(prefixed("  " & ln[0 ..< np], bulletStyle,
                                inlineSpans(ln[np .. ^1])), wrap = true)
       else:
-        box.add spans(inlineSpans(ln), wrap = true)
+        if para.len > 0 and paraQuote:
+          flushPara()
+        paraQuote = false
+        if para.len > 0:
+          para.add (text: " ", style: Style())
+        para.add inlineSpans(ln)
+  flushPara()
   box
 
 proc dirSummary(n: TreeNode): Widget =
