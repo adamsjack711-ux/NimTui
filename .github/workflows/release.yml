@@ -1,0 +1,83 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # one macOS arm64 runner builds all four platforms: darwin natively /
+    # via -arch x86_64, linux x64+arm64 through zig cc (static musl) —
+    # exactly what npm/build-binaries.sh does locally
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: "2.2.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+
+      - name: Check tag matches loom.nimble (the source of truth)
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NIMBLE="$(sed -n 's/^version *= *"\(.*\)"/\1/p' loom.nimble)"
+          if [ "$VERSION" != "$NIMBLE" ]; then
+            echo "tag $GITHUB_REF_NAME does not match loom.nimble version $NIMBLE"
+            exit 1
+          fi
+
+      - name: Build binaries for all platforms
+        run: sh npm/build-binaries.sh
+
+      - name: Smoke-test the native binary
+        run: |
+          npm/dist/darwin-arm64/nimtui --selftest > /tmp/smoke.out
+          grep -q "loom dashboard" /tmp/smoke.out
+
+      - name: Package release tarballs
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p release
+          for plat in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+            tar czf "release/nimtui_${VERSION}_${plat}.tar.gz" -C "npm/dist/${plat}" nimtui
+          done
+          (cd release && shasum -a 256 *.tar.gz > checksums.txt)
+
+      - name: Create GitHub release (notes from CHANGELOG)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { grab = 1; next }
+            /^## \[/ { grab = 0 }
+            grab' CHANGELOG.md > /tmp/notes.md
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --title "loom $GITHUB_REF_NAME" --notes-file /tmp/notes.md
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish to npm (skipped if this version is already live)
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if npm view "nimtui@${VERSION}" version >/dev/null 2>&1; then
+            echo "nimtui@${VERSION} already on the registry — skipping publish"
+            exit 0
+          fi
+          npm pkg set version="${VERSION}"
+          npm publish --access public
