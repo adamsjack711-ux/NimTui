@@ -1,5 +1,10 @@
 # loom
 
+[![ci](https://github.com/adamsjack711-ux/NimTui/actions/workflows/ci.yml/badge.svg)](https://github.com/adamsjack711-ux/NimTui/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/nimtui?label=npm%20nimtui)](https://www.npmjs.com/package/nimtui)
+[![nim](https://img.shields.io/badge/nim-%E2%89%A5%202.0-f3d400)](https://nim-lang.org)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 A reactive terminal UI framework for Nim. Declarative widget trees via a
 macro DSL, fine-grained reactivity via signals, a flex layout engine, and
 diffed ANSI rendering — compiled to a single zero-dependency binary.
@@ -30,6 +35,18 @@ app.run()
 
 Set `cpu` from anywhere — a timer, a socket, a subprocess — and the UI
 updates itself. No manual redraw calls, no dirty flags, no virtual DOM.
+
+## Install
+
+```sh
+# as a Nim library
+nimble install loom
+# (until the package-index submission lands, install by URL:)
+nimble install https://github.com/adamsjack711-ux/NimTui
+
+# just try the demo dashboard — no Nim needed, prebuilt binary via npm
+npx nimtui
+```
 
 ## Why
 
@@ -116,7 +133,7 @@ reactive filtering, load gauge + history sparkline, memory, log panel,
 tabs, themes). Try it without installing Nim:
 
 ```sh
-npx nimtui         # prebuilt binary via npm (macOS arm64)
+npx nimtui         # prebuilt binary via npm (macOS arm64/x64, Linux x64/arm64)
 ```
 
 **Journal** — a notes app stressing the layout system: a file-tree
@@ -158,7 +175,8 @@ nimble test
 
 ## Status / roadmap
 
-v0.2 — functional, themed, width-aware, and tested (100+ headless tests).
+Functional, themed, width-aware, and tested (100+ headless tests) — see
+[CHANGELOG.md](CHANGELOG.md) for released versions.
 Deliberately out of scope for now:
 
 - Windows (VT sequences would work; the input/termios layer is POSIX)

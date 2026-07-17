@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.2.0"
+version       = "0.2.1"
 author        = "Jack Adams-Lovell"
 description   = "Reactive terminal UI framework for Nim — declarative macro DSL, flex layout, zero dependencies"
 license       = "MIT"
